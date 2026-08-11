@@ -1,0 +1,24 @@
+#!/bin/bash
+# devbox [session|ls|kill <name>] — attach/create tmux sessions from ANY shell that is
+# already inside the container (browser IDE terminal, ssh -p 2222, Termius full shell).
+#
+# Install (inside the container — persisted, survives rebuilds):
+#   cp devbox ~/.local/bin/devbox && chmod +x ~/.local/bin/devbox
+#
+# Same vocabulary as the desktop-side devbox() function (clients/devbox.zsh), so every
+# device speaks identically: `devbox api` from your Mac and `devbox api` from a phone
+# shell land in the same session.
+cmd="${1:-main}"
+case "$cmd" in
+  ls) exec tmux ls ;;
+  kill) exec tmux kill-session -t "${2:?usage: devbox kill <session>}" ;;
+  *)
+    if [ -n "$TMUX" ]; then
+      # Already inside tmux: create detached if needed, then switch — never nest.
+      tmux has-session -t "=$cmd" 2>/dev/null || tmux new-session -d -s "$cmd"
+      exec tmux switch-client -t "=$cmd"
+    else
+      exec tmux new-session -A -s "$cmd"
+    fi
+    ;;
+esac

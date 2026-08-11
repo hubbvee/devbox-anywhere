@@ -1,0 +1,7 @@
+# Never commit real secrets — templates/ has *.example files only.
+*.env
+*.env.local
+main.env
+!*.env.op
+!*.example
+.DS_Store

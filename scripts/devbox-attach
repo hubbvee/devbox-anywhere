@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# One-tap session picker for phone SSH keys (Termius etc.) — runs on the VPS HOST.
+#
+# Install on the host at ~/bin/devbox-attach (chmod +x), then lock a dedicated phone key
+# to it in ~/.ssh/authorized_keys (ALL ONE LINE):
+#
+#   command="/home/youruser/bin/devbox-attach",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAA... phone-devbox
+#
+# Behavior:
+#   - `ssh youruser@host <name>` attaches/creates <name> directly (SSH_ORIGINAL_COMMAND)
+#   - otherwise: numbered menu of active sessions; Enter = main; typing a
+#     new name creates that session.
+# Revoke the phone anytime by deleting its line from authorized_keys.
+set -euo pipefail
+
+# Find the devbox container by its STABLE label. With Coolify, resourceName tracks the
+# app NAME and survives delete+recreate rebuilds (uuids don't). Plain docker compose:
+# use the fixed container name instead:  cid=$(docker ps -q -f name=devbox | head -1)
+cid=$(docker ps -q -f label=coolify.resourceName=devbox | head -1)
+if [ -z "$cid" ]; then
+  echo "devbox container is not running" >&2
+  exit 1
+fi
+
+target="${SSH_ORIGINAL_COMMAND:-}"
+
+if [ -z "$target" ]; then
+  mapfile -t sessions < <(docker exec -u coder "$cid" tmux list-sessions -F '#S' 2>/dev/null || true)
+  if [ "${#sessions[@]}" -gt 0 ]; then
+    echo "Active tmux sessions:"
+    i=1
+    for s in "${sessions[@]}"; do
+      printf '  %d) %s\n' "$i" "$s"
+      i=$((i+1))
+    done
+    printf 'Session number, new name, or Enter for main: '
+    read -r choice || choice=""
+    if [ -z "$choice" ]; then
+      target="main"
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#sessions[@]}" ]; then
+      target="${sessions[choice-1]}"
+    else
+      target="$choice"
+    fi
+  else
+    target="main"
+  fi
+fi
+
+# Injection guard: session names only, nothing shell-ish gets through.
+if ! [[ "$target" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "invalid session name: $target" >&2
+  exit 1
+fi
+
+exec docker exec -it -u coder "$cid" tmux new -A -s "$target"

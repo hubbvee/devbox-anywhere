@@ -1,0 +1,21 @@
+{
+  "terminal.integrated.defaultProfile.linux": "tmux",
+  "terminal.integrated.profiles.linux": {
+    "tmux": {
+      "path": "tmux",
+      "args": ["new-session", "-A", "-s", "main"],
+      "icon": "terminal-tmux"
+    },
+    "bash (no tmux)": {
+      "path": "bash"
+    }
+  },
+  "workbench.startupEditor": "none",
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+  "editor.fontSize": 14,
+  "editor.minimap.enabled": false,
+  "telemetry.telemetryLevel": "off",
+  "git.confirmSync": false,
+  "git.autofetch": true
+}
