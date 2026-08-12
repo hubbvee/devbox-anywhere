@@ -73,7 +73,17 @@ cleanup() {
     fi
   fi
 }
-trap cleanup EXIT HUP INT TERM
+on_signal() {
+  signal=$1
+  trap - HUP INT TERM
+  # EXIT owns cleanup. Re-raise the signal so callers and cron see the conventional
+  # signal-derived status, and never resume the backup after service restoration.
+  kill -s "$signal" "$$"
+}
+trap cleanup EXIT
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 
 # Build the include list from paths that exist. Hermes is optional until docs/10. Its
 # SQLite/session state must not be copied while the gateway is writing it.
