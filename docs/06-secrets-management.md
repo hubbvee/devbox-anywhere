@@ -90,8 +90,13 @@ returns a session token you must export. Practical helper in `~/.bashrc`:
 bwu() {  # unlock once per shell: bwu, then bw get ... just works
   export BW_SESSION=$(bw unlock --raw) && echo "bw unlocked"
 }
-bws() {  # bws <item> [field]  → prints a secret
-  bw get ${2:+field --itemid} ${2:-password} "$1"
+bws() {  # bws <item> [custom-field]  → prints password or a named custom field
+  if [ -n "${2:-}" ]; then
+    bw get item "$1" | jq -er --arg field "$2" \
+      '.fields[] | select(.name == $field) | .value'
+  else
+    bw get password "$1"
+  fi
 }
 ```
 

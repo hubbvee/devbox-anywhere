@@ -6,7 +6,9 @@
 survives anything that happens to the container), tars `~/project`, `~/.ssh`,
 `~/.local/secrets`, and the persisted Hermes Agent home out of the container, and keeps
 14 nightly archives. Before archiving the Hermes home, the script stops a running Hermes
-gateway and restarts it after the snapshot so SQLite and session files are consistent.
+gateway and verifies that it has restarted after the snapshot so SQLite and session files
+are consistent. If restart verification fails, the backup exits nonzero, retries service
+recovery, and does not publish the new archive; monitor the cron log for that alert.
 Treat the archives as sensitive: they contain credentials and conversation/session state.
 
 ```bash
