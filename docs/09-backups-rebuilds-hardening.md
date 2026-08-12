@@ -3,18 +3,24 @@
 ## Nightly backups (host cron)
 
 [`scripts/backup-devbox.sh`](../scripts/backup-devbox.sh) runs on the **host** (so it
-survives anything that happens to the container), tars `~/project`, `~/.ssh` and
-`~/.local/secrets` out of the container, keeps 14 nightly archives:
+survives anything that happens to the container), tars `~/project`, `~/.ssh`,
+`~/.local/secrets`, and the persisted Hermes Agent home out of the container, and keeps
+14 nightly archives. Before archiving the Hermes home, the script stops a running Hermes
+gateway and restarts it after the snapshot so SQLite and session files are consistent.
+Treat the archives as sensitive: they contain credentials and conversation/session state.
 
 ```bash
 # on the VPS host
-mkdir -p ~/bin && cp backup-devbox.sh ~/bin/ && chmod +x ~/bin/backup-devbox.sh
+mkdir -p ~/bin && install -m 0700 scripts/backup-devbox.sh ~/bin/backup-devbox.sh
+install -d -m 0700 ~/devbox-backups
 crontab -e
-# 15 3 * * * $HOME/bin/backup-devbox.sh >> $HOME/devbox-backups/backup.log 2>&1
+# 15 3 * * * umask 077; $HOME/bin/backup-devbox.sh >> $HOME/devbox-backups/backup.log 2>&1
 ```
 
-Restore is one line (in the script header). For real disaster recovery, also sync
-`~/devbox-backups/` off the server (rclone to any object storage, or restic).
+Restore is one line (in the script header). For real disaster recovery, also copy the
+archives off the server using authenticated encryption—for example restic, borg, or an
+`rclone crypt` remote. Do not upload these plaintext archives to an ordinary bucket or
+shared drive; transport encryption alone does not protect them at rest.
 
 ## Rebuilds are hands-off — here's the machinery
 
@@ -28,7 +34,8 @@ that boring:
    live in `~/.local/share/*` with symlinks pointing at them. The entrypoint re-runs
    relink at every boot, so a fresh container has every login restored before you
    even connect. **When you add a CLI that stores config in `~/.config/<tool>`:** move
-   the dir into `~/.local/share/`, add one `relink` line, done forever.
+   the dir into `~/.local/share/`, add one `relink` line, done forever. This includes
+   `~/.hermes` when you follow the Telegram setup in docs/10.
 3. **Persisted sshd host key** — no "host key changed!" warnings after rebuilds.
 4. **Stable container label** — host scripts find the container by
    `coolify.resourceName=devbox` (tracks the app *name*), never by uuid (changes on
@@ -53,6 +60,7 @@ fresh rebuilds have it from boot.
 - [ ] Vault access from the box is **read-only** (service account; docs/06)
 - [ ] `main.env` is `0600`, holds literals only, and is in the nightly backup
 - [ ] Backups tested: actually restore one archive once
+- [ ] Backup archives are encrypted or stored in access-controlled private storage
 - [ ] Know your revoke moves: delete a line in host `authorized_keys` (phone/picker),
       delete a line in `/data/devbox/ssh/authorized_keys` (container), rotate the
       service-account token (vault)
