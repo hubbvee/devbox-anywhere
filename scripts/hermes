@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hermes — give an orchestrator agent (or you) hands on every devbox tmux session.
+# tmuxctl — give an orchestrator agent (or you) hands on every devbox tmux session.
 # Thin wrapper over tmux list-sessions / capture-pane / send-keys. See docs/08.
 #
 # Runs in two places:
@@ -8,18 +8,25 @@
 #                                      (an ssh alias for coder@YOUR_SERVER_IP -p 2222)
 #
 # Usage:
-#   hermes ls                     list sessions (name, attached, activity)
-#   hermes peek <session> [n]     last n lines (default 40) of the session's active pane
-#   hermes send <session> <cmd…>  type cmd into the session and press Enter
-#   hermes run  <session> <cmd…>  like send, but creates the session first if missing
-#   hermes broadcast <cmd…>       send to EVERY session (asks for confirmation on a TTY)
-#   hermes wait <session> <pat>   block until <pat> (grep -E) appears in the pane, 5s poll
+#   tmuxctl ls                     list sessions (name, attached, activity)
+#   tmuxctl peek <session> [n]     last n lines (default 40) of the session's active pane
+#   tmuxctl send <session> <cmd…>  type cmd into the session and press Enter
+#   tmuxctl run  <session> <cmd…>  like send, but creates the session first if missing
+#   tmuxctl broadcast --yes <cmd…> send to EVERY session (explicit opt-in required)
+#   tmuxctl wait <session> <pat>   block until <pat> (grep -E) appears in the pane, 5s poll
 #
-# Install (inside the container): cp hermes ~/.local/bin/hermes && chmod +x ~/.local/bin/hermes
+# Install (inside the container): install -m 0700 scripts/hermes ~/.local/bin/tmuxctl
 set -euo pipefail
 
 t() {  # run a tmux command locally or over ssh, transparently
-  if [ -n "${HERMES_SSH:-}" ]; then ssh "$HERMES_SSH" tmux "$@"; else tmux "$@"; fi
+  if [ -n "${HERMES_SSH:-}" ]; then
+    # OpenSSH normally joins arguments into a remote shell command. Pass a NUL-delimited
+    # argv over stdin instead so payload metacharacters never become remote shell syntax.
+    printf '%s\0' "$@" | ssh "$HERMES_SSH" \
+      'python3 -c '\''import os, subprocess, sys; a=sys.stdin.buffer.read().split(b"\0"); a.pop() if a and a[-1] == b"" else None; r=subprocess.run(["tmux", *[os.fsdecode(x) for x in a]]); raise SystemExit(r.returncode)'\'''
+  else
+    tmux "$@"
+  fi
 }
 
 cmd="${1:-ls}"; shift || true
@@ -30,28 +37,35 @@ case "$cmd" in
     ;;
   peek)
     s="${1:?usage: hermes peek <session> [lines]}"; n="${2:-40}"
-    t capture-pane -p -t "=$s" -S "-$n"
+    t capture-pane -p -t "=$s:" -S "-$n"
     ;;
   send)
-    s="${1:?usage: hermes send <session> <cmd...>}"; shift
-    t send-keys -t "=$s" "$*" Enter
+    s="${1:?usage: tmuxctl send <session> <cmd...>}"; shift
+    [ $# -ge 1 ] || { echo "usage: tmuxctl send <session> <cmd...>" >&2; exit 1; }
+    t send-keys -t "=$s:" -l -- "$*"
+    t send-keys -t "=$s:" Enter
     ;;
   run)
-    s="${1:?usage: hermes run <session> <cmd...>}"; shift
-    t has-session -t "=$s" 2>/dev/null || t new-session -d -s "$s"
-    t send-keys -t "=$s" "$*" Enter
+    s="${1:?usage: tmuxctl run <session> <cmd...>}"; shift
+    [ $# -ge 1 ] || { echo "usage: tmuxctl run <session> <cmd...>" >&2; exit 1; }
+    t has-session -t "=$s:" 2>/dev/null || t new-session -d -s "$s"
+    t send-keys -t "=$s:" -l -- "$*"
+    t send-keys -t "=$s:" Enter
     ;;
   broadcast)
-    [ $# -ge 1 ] || { echo "usage: hermes broadcast <cmd...>" >&2; exit 1; }
-    if [ -t 0 ]; then read -r -p "send '$*' to ALL sessions? [y/N] " ok; [ "$ok" = y ] || exit 1; fi
-    for s in $(t list-sessions -F '#{session_name}' 2>/dev/null); do
-      t send-keys -t "=$s" "$*" Enter
+    [ "${1:-}" = --yes ] || { echo "usage: tmuxctl broadcast --yes <cmd...>" >&2; exit 1; }
+    shift
+    [ $# -ge 1 ] || { echo "usage: tmuxctl broadcast --yes <cmd...>" >&2; exit 1; }
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      t send-keys -t "=$s:" -l -- "$*"
+      t send-keys -t "=$s:" Enter
       echo "→ $s"
-    done
+    done < <(t list-sessions -F '#{session_name}' 2>/dev/null)
     ;;
   wait)
-    s="${1:?usage: hermes wait <session> <pattern>}"; pat="${2:?pattern required}"
-    until t capture-pane -p -t "=$s" -S -200 | grep -qE "$pat"; do sleep 5; done
+    s="${1:?usage: tmuxctl wait <session> <pattern>}"; pat="${2:?pattern required}"
+    until t capture-pane -p -t "=$s:" -S -200 | grep -qE "$pat"; do sleep 5; done
     echo "pattern matched in $s"
     ;;
   *)

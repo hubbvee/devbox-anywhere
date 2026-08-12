@@ -59,12 +59,16 @@ and an orchestrator pattern ("Hermes") where one agent supervises every session.
 8. **[Run the Hermes pattern](docs/08-hermes-agent.md)** — one agent to drive them all.
 9. **[Backups & rebuilds](docs/09-backups-rebuilds-hardening.md)** — nightly cron,
    hands-off rebuilds, hardening checklist.
+10. **[Manage projects from Telegram topics](docs/10-telegram-project-topics.md)** —
+    one private forum group, one isolated topic and tmux session per project.
+11. **[Switch coding agents mid-session](docs/11-switch-coding-agents-mid-session.md)** —
+    safely hand a live worktree between Claude Code, Codex, or another CLI.
 
 ## Repo layout
 
 | Path | What |
 |---|---|
-| `docs/01–09` | The guide, in build order |
+| `docs/01–11` | The guide, in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
 | `scripts/` | Server-side: `devbox`, `devbox-attach` (phone picker), `devbox-relink`, `hermes`, backup cron |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
