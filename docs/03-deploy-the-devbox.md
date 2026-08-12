@@ -30,10 +30,11 @@ the same five paths.
 
 ## 2. Create the app in Coolify
 
-1. **+ New → Application → Dockerfile** (paste the contents of `stack/Dockerfile`;
-   Coolify's Dockerfile build pack also needs the `stack/config/*` files and
-   `entrypoint.sh` — easiest is to point Coolify at your fork of this repo with
-   `stack/` as the build context).
+1. Fork this repository, then choose **+ New → Application → Public/Private Repository**.
+   Select your fork, use the Dockerfile build pack, set `stack/` as the build context,
+   and set `Dockerfile` as the Dockerfile location. Do not paste the Dockerfile alone:
+   the build also requires `stack/config/*` and `stack/entrypoint.sh` from the same
+   pinned repository revision.
 2. Name it **`devbox`** — the name matters: scripts find the container via the stable
    label `coolify.resourceName=devbox`, which survives rebuilds (the app uuid does not).
 3. **Domain:** `https://devbox.example.com`, **Ports Exposes:** `8080`.

@@ -46,10 +46,31 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="$BACKUP_DIR/devbox-$STAMP.tar.gz"
 TMP=$(mktemp "$BACKUP_DIR/.devbox-$STAMP.XXXXXX.tmp")
 GATEWAY_WAS_RUNNING=0
+gateway_is_running() {
+  docker exec "$CID" sh -c \
+    "ps -u \$(id -u) -o command= | grep -Eq '([g]ateway/run\.py|[h]ermes_cli\.main gateway run)'"
+}
+restart_gateway() {
+  attempts=0
+  while [ "$attempts" -lt 3 ]; do
+    if docker exec "$CID" hermes gateway start >/dev/null 2>&1 && gateway_is_running; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 2
+  done
+  return 1
+}
 cleanup() {
   rm -f -- "$TMP"
   if [ "$GATEWAY_WAS_RUNNING" -eq 1 ]; then
-    docker exec "$CID" hermes gateway start >/dev/null 2>&1 || true
+    # Make a bounded best effort to restore service on every failure path. Keep the
+    # nonzero backup exit status if recovery still fails so cron monitoring can alert.
+    if restart_gateway; then
+      GATEWAY_WAS_RUNNING=0
+    else
+      echo "$(date -Is) ERROR: Hermes gateway restart failed after backup; manual recovery required" >&2
+    fi
   fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -58,7 +79,7 @@ trap cleanup EXIT HUP INT TERM
 # SQLite/session state must not be copied while the gateway is writing it.
 set -- project .ssh .local/secrets
 if docker exec "$CID" test -d /home/coder/.local/share/hermes-home; then
-  if docker exec "$CID" sh -c "ps -u \$(id -u) -o command= | grep -q '[g]ateway/run.py'"; then
+  if gateway_is_running; then
     GATEWAY_WAS_RUNNING=1
     docker exec "$CID" hermes gateway stop >/dev/null
   fi
@@ -69,11 +90,12 @@ fi
 # publish atomically. A failed docker/tar run must never leave a plausible final archive.
 docker exec "$CID" tar czf - -C /home/coder "$@" > "$TMP"
 tar tzf "$TMP" >/dev/null
-mv -- "$TMP" "$OUT"
 if [ "$GATEWAY_WAS_RUNNING" -eq 1 ]; then
-  docker exec "$CID" hermes gateway start >/dev/null
+  restart_gateway
   GATEWAY_WAS_RUNNING=0
 fi
+# Do not publish the archive until the gateway has been restored successfully.
+mv -- "$TMP" "$OUT"
 trap - EXIT HUP INT TERM
 
 # Retention: keep the newest $KEEP, delete the rest.

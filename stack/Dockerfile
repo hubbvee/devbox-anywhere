@@ -4,7 +4,9 @@
 # definition). Everything the USER installs later should go to ~/.local, which is a host
 # bind mount (see docs/03) — that's how self-installed tools survive rebuilds too.
 
-FROM codercom/code-server:latest
+# Pin the multi-architecture code-server 4.132.0 image index so this release does not
+# silently change when an upstream `latest` tag moves.
+FROM codercom/code-server@sha256:b88ed46a6ace76a0294a17a24f39aa88032ed0a3692c3d8ab5433b47ab57ccbf
 
 USER root
 
@@ -32,11 +34,18 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get update && apt-get install -y gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Node.js LTS + AI coding CLIs. Installed as root → land in /usr (baked).
+# Node.js LTS + AI coding CLIs. Release-defining versions and the NodeSource bootstrap
+# script are pinned; update these values deliberately in a reviewed release.
 # User-level `npm i -g` later goes to ~/.local instead (entrypoint sets the npm prefix).
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
- && apt-get install -y --no-install-recommends nodejs \
- && npm install -g @anthropic-ai/claude-code @openai/codex \
+ARG NODEJS_VERSION=22.23.2-1nodesource1
+ARG CLAUDE_CODE_VERSION=2.1.228
+ARG CODEX_VERSION=0.147.0
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource-setup.sh \
+ && echo "575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1  /tmp/nodesource-setup.sh" | sha256sum -c - \
+ && bash /tmp/nodesource-setup.sh \
+ && rm -f /tmp/nodesource-setup.sh \
+ && apt-get install -y --no-install-recommends "nodejs=${NODEJS_VERSION}" \
+ && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force \
  && rm -rf /var/lib/apt/lists/*
 
