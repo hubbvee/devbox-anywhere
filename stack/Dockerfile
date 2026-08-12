@@ -16,11 +16,15 @@ ARG DEBIAN_SNAPSHOT=20260810T000000Z
 RUN for sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
       [ -f "$sources" ] || continue; \
       sed -i \
-        -e "s|https://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|https://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|http://security.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
         -e "s|https://security.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|https://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|g" \
         "$sources"; \
     done \
- && ! grep -R -E 'https://(deb\.debian\.org/debian|security\.debian\.org/debian-security)' \
+ && ! grep -R -E 'https?://(deb\.debian\.org/debian(-security)?|security\.debian\.org/debian-security)' \
       /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null
 RUN printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot
 
@@ -63,6 +67,10 @@ ARG CLAUDE_CODE_VERSION=2.1.228
 ARG CODEX_VERSION=0.147.0
 ARG CLAUDE_CODE_INTEGRITY=sha512-S3Iy+c6ZuFjswQOekbVgXA+RxAuU8H2ae2nxFynqmvR5r3Gm9oyFV19XgiuatYRFKKjxP0K3i5vvvelPDgx12g==
 ARG CODEX_INTEGRITY=sha512-EQLEXecAG2ptxI7UpBMo2TR/ga5596/c/OsYF/0LoUDh5JANZ7IoGqlzBEWbuEVQ76JePIbtTW/ihCkp1a7Z3w==
+ARG CLAUDE_CODE_LINUX_X64_INTEGRITY=sha512-LMrLUYW5FY3r8wsQk/U5HWacHmxlEWKxaOgNzmDn1f5FhgKsSAPpioqf2JE5AusRRKXyWvhYM1crOE/CKIqoNQ==
+ARG CLAUDE_CODE_LINUX_ARM64_INTEGRITY=sha512-rWSzUqON6kyIXUVz9KDU+9R6FdO11IVCO94D7kkWWyRPzFqzaAB80RmfgP//QgTIVFApEUzEUH2tfAGsUhD6ug==
+ARG CODEX_LINUX_X64_INTEGRITY=sha512-0W9MBxPpWW0cSkNqrTDN2jR7rzzT7oNMhQY5446lT2Lw5cz5yhDTck4Va9rjkQEm+HlFzP/dmEMSZbXfJsINmw==
+ARG CODEX_LINUX_ARM64_INTEGRITY=sha512-SLC1JXw2TYfr/c3HhrJubyyLelq7vTOLWVmiThFA+z0+WgzCPmaseJ/kzDD3Gge/TO7fCnnj7UcPmC0d2c8XAg==
 RUN arch="$(dpkg --print-architecture)" \
  && case "$arch" in \
       amd64) node_sha256="eed0c5f0ab411f28783f81f051fcf7928ae8bf833e2df11f48f3fa78270025cb" ;; \
@@ -77,6 +85,14 @@ RUN arch="$(dpkg --print-architecture)" \
  && rm -f /tmp/nodejs.deb \
  && test "$(npm view "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" dist.integrity)" = "$CLAUDE_CODE_INTEGRITY" \
  && test "$(npm view "@openai/codex@${CODEX_VERSION}" dist.integrity)" = "$CODEX_INTEGRITY" \
+ && case "$arch" in \
+      amd64) \
+        test "$(npm view "@anthropic-ai/claude-code-linux-x64@${CLAUDE_CODE_VERSION}" dist.integrity)" = "$CLAUDE_CODE_LINUX_X64_INTEGRITY" \
+        && test "$(npm view "@openai/codex@${CODEX_VERSION}-linux-x64" dist.integrity)" = "$CODEX_LINUX_X64_INTEGRITY" ;; \
+      arm64) \
+        test "$(npm view "@anthropic-ai/claude-code-linux-arm64@${CLAUDE_CODE_VERSION}" dist.integrity)" = "$CLAUDE_CODE_LINUX_ARM64_INTEGRITY" \
+        && test "$(npm view "@openai/codex@${CODEX_VERSION}-linux-arm64" dist.integrity)" = "$CODEX_LINUX_ARM64_INTEGRITY" ;; \
+    esac \
  && npm install -g --ignore-scripts=false --omit=dev \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@openai/codex@${CODEX_VERSION}" \
