@@ -59,7 +59,8 @@ RUN arch="$(dpkg --print-architecture)" \
  && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${arch}"
 
 # Node.js LTS + AI coding CLIs. Release-defining package checksums and npm integrities
-# are pinned; both CLIs currently publish without npm dependencies.
+# are pinned. Neither CLI has ordinary npm dependencies; both use platform-specific
+# optional packages, whose selected Linux x64/arm64 integrities are verified below.
 # Update these values deliberately in a reviewed release.
 # User-level `npm i -g` later goes to ~/.local instead (entrypoint sets the npm prefix).
 ARG NODEJS_VERSION=22.23.2-1nodesource1
