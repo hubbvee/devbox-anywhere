@@ -48,10 +48,12 @@ A Dock folder that ships anything dropped into it:
 1. `mkdir -p ~/DevboxDrop ~/bin`, copy in [`clients/devbox-drop.sh`](../clients/devbox-drop.sh)
    (`chmod +x`), edit `YOUR_MAC_USERNAME` in
    [`clients/com.devbox.drop.plist`](../clients/com.devbox.drop.plist), then:
+
    ```bash
    cp com.devbox.drop.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.devbox.drop.plist
    ```
+
 2. Pin `~/DevboxDrop` to the Dock. Drag anything onto it → it appears in
    `~/project/_inbox/`, the remote path is in your clipboard, and you get a
    notification. Originals archive to `~/DevboxDrop/.sent/`.

@@ -9,7 +9,7 @@ repo. Browser IDE + tmux on a VPS, one named session per project, one-tap attach
 an iPhone via Termius, secrets from 1Password/Bitwarden, drag-and-drop file transfer,
 and an orchestrator pattern ("Hermes") where one agent supervises every session.
 
-```
+```text
                         ┌────────────────────────── YOUR VPS (OVH / Hetzner / any) ─┐
   Desktop browser ──────►  HTTPS (Coolify/Traefik + optional Cloudflare Access)     │
   Desktop terminal ─────►  ssh host → docker exec ─┐                                │
@@ -67,7 +67,7 @@ and an orchestrator pattern ("Hermes") where one agent supervises every session.
 ## Repo layout
 
 | Path | What |
-|---|---|
+| --- | --- |
 | `docs/01–11` | The guide, in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
 | `scripts/` | Server-side: `devbox`, `devbox-attach` (phone picker), `devbox-relink`, `hermes`, backup cron |

@@ -27,21 +27,26 @@ headlessly in every shell and cron job.
 1. **Install `op` on the devbox** (self-service into persisted `~/.local/bin` — no
    rebuild needed; check [1Password's site](https://developer.1password.com/docs/cli/get-started/)
    for the current version number):
+
    ```bash
    V=2.30.0
    curl -sSfLo /tmp/op.zip "https://cache.agilebits.com/dist/1P/op2/pkg/v${V}/op_linux_amd64_v${V}.zip"
    unzip -o /tmp/op.zip -d /tmp/opx && install /tmp/opx/op ~/.local/bin/op && rm -rf /tmp/op.zip /tmp/opx
    op --version
    ```
+
 2. **Create a shared vault** (e.g. `Dev`) in your 1Password account; put each secret in
    it as an item with labeled fields (kebab-case names pay off in references).
 3. **Create a service account** (1Password web → Developer → Service Accounts) with
    **read-only** access to that vault only. Copy the `ops_...` token once.
 4. **Drop the token in `main.env`:**
+
    ```bash
    echo 'OP_SERVICE_ACCOUNT_TOKEN=ops_...' >> ~/.secrets/main.env
    ```
+
    New shells can now `op read`, `op run`, `op inject` with zero prompts:
+
    ```bash
    op vault list                                   # sanity check
    export STRIPE_KEY=$(op read "op://Dev/myproject-env/stripe-secret-key")
@@ -58,6 +63,7 @@ op inject -i .env.op -o .env.local     # .env.local stays gitignored
 ```
 
 Gotchas we hit so you don't:
+
 - In scripts, target the vault by **UUID**, not name — names can be ambiguous and `op`
   once wrote an item to the wrong vault for us.
 - `op item edit item "field[concealed]=$VAR"` with an **empty** `$VAR` silently writes

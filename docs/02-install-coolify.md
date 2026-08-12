@@ -24,7 +24,7 @@ this UI controls your whole server), and add the server itself when prompted
 
 Point a subdomain at your server before deploying the devbox, e.g.:
 
-```
+```text
 devbox.example.com    A    YOUR_SERVER_IP
 ```
 

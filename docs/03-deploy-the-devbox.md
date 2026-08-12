@@ -21,7 +21,7 @@ redeploys, reboots, *and* full delete+recreate rebuilds; to rebuild you just re-
 the same five paths.
 
 | Host path | Container path | What lives there |
-|---|---|---|
+| --- | --- | --- |
 | `/data/devbox/project` | `/home/coder/project` | all your code + `_inbox/` for file drops |
 | `/data/devbox/dot-local` | `/home/coder/.local` | self-installed tools, npm globals, secrets, extensions |
 | `/data/devbox/claude` | `/home/coder/.claude` | Claude Code OAuth + config |

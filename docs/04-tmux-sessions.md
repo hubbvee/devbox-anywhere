@@ -53,7 +53,7 @@ Practical conventions that keep this sane:
 Everything below uses the default prefix `Ctrl-b`:
 
 | Keys | Does |
-|---|---|
+| --- | --- |
 | `Ctrl-b d` | detach (session keeps running) |
 | `Ctrl-b c` / `Ctrl-b n` | new window / next window |
 | `Ctrl-b %` / `Ctrl-b "` | split vertical / horizontal |

@@ -34,7 +34,7 @@ an alias:
 cat laptop-devbox.pub | sudo tee -a /data/devbox/ssh/authorized_keys
 ```
 
-```
+```sshconfig
 # ~/.ssh/config on your device
 Host devbox
   HostName YOUR_SERVER_IP
@@ -62,7 +62,7 @@ On the **VPS host**, install [`scripts/devbox-attach`](../scripts/devbox-attach)
 `~/bin/devbox-attach` (`chmod +x`), then add the phone's key to the **host** user's
 `~/.ssh/authorized_keys` with a **forced command** (all one line):
 
-```
+```text
 command="/home/youruser/bin/devbox-attach",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAA...yourphonekey phone-devbox
 ```
 
