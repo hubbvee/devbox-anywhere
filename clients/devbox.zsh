@@ -17,17 +17,22 @@ DEVBOX_LABEL="coolify.resourceName=devbox" # container lookup; compose: use name
 # NOTE: must be a FUNCTION, not an alias — alias quoting runs the $(docker ps ...)
 # lookup on your Mac instead of the server ("No such container: tmux").
 devbox() {
+  local session
   if [ "$1" = "ls" ]; then
-    ssh $DEVBOX_HOST "docker exec -u coder \$(docker ps -q -f label=$DEVBOX_LABEL | head -1) tmux ls"
+    ssh "$DEVBOX_HOST" "docker exec -u coder \$(docker ps -q -f label=$DEVBOX_LABEL | head -1) tmux ls"
     return
   fi
   if [ "$1" = "kill" ]; then
     if [ -z "$2" ]; then echo "usage: devbox kill <session>  (see: devbox ls)"; return 1; fi
-    ssh $DEVBOX_HOST "docker exec -u coder \$(docker ps -q -f label=$DEVBOX_LABEL | head -1) tmux kill-session -t $2" \
-      && echo "killed session: $2"
+    session="$2"
+    [[ -n "$session" && "$session" != *[^A-Za-z0-9._-]* ]] || { echo "invalid session name: $session" >&2; return 2; }
+    ssh "$DEVBOX_HOST" "docker exec -u coder \$(docker ps -q -f label=$DEVBOX_LABEL | head -1) tmux kill-session -t '=$session'" \
+      && echo "killed session: $session"
     return
   fi
-  ssh -t $DEVBOX_HOST "docker exec -it -u coder \$(docker ps -q -f label=$DEVBOX_LABEL | head -1) tmux new -A -s ${1:-main}"
+  session="${1:-main}"
+  [[ -n "$session" && "$session" != *[^A-Za-z0-9._-]* ]] || { echo "invalid session name: $session" >&2; return 2; }
+  ssh -t "$DEVBOX_HOST" "docker exec -it -u coder \$(docker ps -q -f label=$DEVBOX_LABEL | head -1) tmux new -A -s '$session'"
 }
 
 # --- file/screenshot bridge ---------------------------------------------------------

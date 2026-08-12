@@ -30,7 +30,7 @@ tmuxctl peek api 60                         # last 60 lines of the api session
 tmuxctl send api "git status"               # type into api + Enter
 tmuxctl run tests "npm test"                # create tests session if needed, then run
 tmuxctl wait tests "passed|failed"          # block until the output matches
-tmuxctl broadcast "git fetch"               # every session (confirms on a TTY)
+tmuxctl broadcast --yes "git fetch"         # every session; explicit opt-in required
 ```
 
 Install inside the container (`~/.local/bin`, persists) — or run it from your laptop
@@ -74,7 +74,7 @@ What this unlocks:
 ## Keep it safe
 
 - `send-keys` types with **your** permissions into **live** shells: treat `broadcast`
-  like `sudo` (the script asks for confirmation on a TTY for a reason).
+  like `sudo`. It fails closed unless you supply the explicit `--yes` flag.
 - Give the orchestrator the same rule you'd give a junior: read (`peek`) before you
   write (`send`), and no destructive one-liners into sessions you didn't create.
 - Agents inside sessions still have their own approval prompts for dangerous actions —
