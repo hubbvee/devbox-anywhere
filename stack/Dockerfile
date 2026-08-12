@@ -10,6 +10,20 @@ FROM codercom/code-server@sha256:b88ed46a6ace76a0294a17a24f39aa88032ed0a3692c3d8
 
 USER root
 
+# Freeze Debian package indexes at a dated snapshot. Combined with the base-image digest,
+# this keeps apt resolution stable instead of following mutable Debian mirrors.
+ARG DEBIAN_SNAPSHOT=20260810T000000Z
+RUN for sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+      [ -f "$sources" ] || continue; \
+      sed -i \
+        -e "s|https://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|https://security.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
+        "$sources"; \
+    done \
+ && ! grep -R -E 'https://(deb\.debian\.org/debian|security\.debian\.org/debian-security)' \
+      /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null
+RUN printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot
+
 # Base tools + dev-terminal staples. tmux is the whole point; the rest save you
 # apt-installing on every fresh shell.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,27 +39,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN sed -i -e 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' \
            /etc/locale.gen && locale-gen
 
-# GitHub CLI (official apt repo)
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
- && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
- && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      > /etc/apt/sources.list.d/github-cli.list \
- && apt-get update && apt-get install -y gh \
- && rm -rf /var/lib/apt/lists/*
+# GitHub CLI, pinned and checksum-verified for both supported image architectures.
+ARG GH_VERSION=2.97.0
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+      amd64) gh_sha256="a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112" ;; \
+      arm64) gh_sha256="73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5" ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
+      -o /tmp/gh.tar.gz \
+ && echo "$gh_sha256  /tmp/gh.tar.gz" | sha256sum -c - \
+ && tar xzf /tmp/gh.tar.gz -C /tmp \
+ && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh \
+ && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${arch}"
 
-# Node.js LTS + AI coding CLIs. Release-defining versions and the NodeSource bootstrap
-# script are pinned; update these values deliberately in a reviewed release.
+# Node.js LTS + AI coding CLIs. Release-defining package checksums and npm integrities
+# are pinned; both CLIs currently publish without npm dependencies.
+# Update these values deliberately in a reviewed release.
 # User-level `npm i -g` later goes to ~/.local instead (entrypoint sets the npm prefix).
 ARG NODEJS_VERSION=22.23.2-1nodesource1
 ARG CLAUDE_CODE_VERSION=2.1.228
 ARG CODEX_VERSION=0.147.0
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource-setup.sh \
- && echo "575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1  /tmp/nodesource-setup.sh" | sha256sum -c - \
- && bash /tmp/nodesource-setup.sh \
- && rm -f /tmp/nodesource-setup.sh \
- && apt-get install -y --no-install-recommends "nodejs=${NODEJS_VERSION}" \
- && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+ARG CLAUDE_CODE_INTEGRITY=sha512-S3Iy+c6ZuFjswQOekbVgXA+RxAuU8H2ae2nxFynqmvR5r3Gm9oyFV19XgiuatYRFKKjxP0K3i5vvvelPDgx12g==
+ARG CODEX_INTEGRITY=sha512-EQLEXecAG2ptxI7UpBMo2TR/ga5596/c/OsYF/0LoUDh5JANZ7IoGqlzBEWbuEVQ76JePIbtTW/ihCkp1a7Z3w==
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+      amd64) node_sha256="eed0c5f0ab411f28783f81f051fcf7928ae8bf833e2df11f48f3fa78270025cb" ;; \
+      arm64) node_sha256="0018ee0bf997fce587042a2382941dcfac9f404fb994a5c3267fe7d12d8d837b" ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://deb.nodesource.com/node_22.x/pool/main/n/nodejs/nodejs_${NODEJS_VERSION}_${arch}.deb" \
+      -o /tmp/nodejs.deb \
+ && echo "$node_sha256  /tmp/nodejs.deb" | sha256sum -c - \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends /tmp/nodejs.deb \
+ && rm -f /tmp/nodejs.deb \
+ && test "$(npm view "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" dist.integrity)" = "$CLAUDE_CODE_INTEGRITY" \
+ && test "$(npm view "@openai/codex@${CODEX_VERSION}" dist.integrity)" = "$CODEX_INTEGRITY" \
+ && npm install -g --ignore-scripts=false --omit=dev \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force \
  && rm -rf /var/lib/apt/lists/*
 

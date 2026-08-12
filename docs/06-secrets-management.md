@@ -88,7 +88,11 @@ returns a session token you must export. Practical helper in `~/.bashrc`:
 
 ```bash
 bwu() {  # unlock once per shell: bwu, then bw get ... just works
-  export BW_SESSION=$(bw unlock --raw) && echo "bw unlocked"
+  local session
+  session=$(bw unlock --raw) || return
+  [ -n "$session" ] || { echo "bw unlock returned an empty session" >&2; return 1; }
+  export BW_SESSION="$session"
+  echo "bw unlocked"
 }
 bws() {  # bws <item> [custom-field]  → prints password or a named custom field
   if [ -n "${2:-}" ]; then
