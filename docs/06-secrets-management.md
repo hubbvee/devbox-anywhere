@@ -96,8 +96,10 @@ bwu() {  # unlock once per shell: bwu, then bw get ... just works
 }
 bws() {  # bws <item> [custom-field]  → prints password or a named custom field
   if [ -n "${2:-}" ]; then
-    bw get item "$1" | jq -er --arg field "$2" \
-      '.fields[] | select(.name == $field) | .value'
+    local item
+    item=$(bw get item "$1") || return
+    jq -er --arg field "$2" \
+      '.fields[] | select(.name == $field) | .value' <<< "$item"
   else
     bw get password "$1"
   fi
