@@ -21,7 +21,7 @@ recommend to people starting fresh:
 ## Sizing
 
 | Usage | Spec | Roughly |
-|---|---|---|
+| --- | --- | --- |
 | Solo devbox, a few tmux sessions | 2 vCPU / 4 GB RAM / 40 GB SSD | ~$5–8/mo |
 | Devbox + a few deployed side projects | 4 vCPU / 8 GB RAM / 80 GB+ | ~$10–20/mo |
 | Devbox + Coolify hosting "everything you build" | 8 vCPU / 16–32 GB | ~$30+/mo |
