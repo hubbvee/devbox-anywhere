@@ -3,9 +3,8 @@
 If you are using Claude, Codex, Hermes, or another terminal-capable agent, give it the
 repository URL and say:
 
-> **Availability:** this workflow is not publicly installable until a stable release tag
-> containing `scripts/install-devbox` is published. Until then, agents must stop after
-> discovery rather than substitute an unreviewed branch tip.
+> **Availability:** use a stable release tag containing `scripts/install-devbox`. Agents
+> must stop after discovery rather than substitute an unreviewed branch tip.
 >
 > Install Devbox Anywhere on my Linux server using the repository's `AGENTS.md` and
 > `docs/00-agent-guided-install.md`. Show me the dry-run plan first, keep ports private by
@@ -35,6 +34,24 @@ data while rebuilding the declared stack. It does not install Docker, configure 
 alter the firewall, upload keys, or silently expose services.
 
 ## Safe agent workflow
+
+The repository also provides a machine-readable harness for agents:
+
+```bash
+./scripts/devbox-anywhere preflight --json
+./scripts/devbox-anywhere plan --json --approved-commit "$APPROVED_COMMIT"
+sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json
+sudo /opt/devbox-anywhere/scripts/devbox-anywhere diagnose --json
+```
+
+The first two commands are read-only and unprivileged. Verification and diagnosis require
+explicit sudo approval because they read root-owned installer state and inspect Docker.
+
+After a stable release containing `skills/devbox-anywhere/` is published, Hermes users may
+copy that skill directory from the verified stable checkout into
+`$HOME/.hermes/skills/devbox-anywhere/`, then start a new session. Do not use a mutable
+default-branch skill identifier or fetch it before publication. The skill explains the
+workflow; the versioned repository scripts enforce it.
 
 ### 1. Connect and inspect
 

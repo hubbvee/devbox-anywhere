@@ -1,0 +1,379 @@
+#!/usr/bin/python3
+"""Machine-readable orchestration harness for Devbox Anywhere agents."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import re
+import stat
+from typing import Any
+
+SCHEMA_VERSION = 1
+REAL_ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = REAL_ROOT
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DOCKER_CONFIG = "/nonexistent/devbox-anywhere-docker-config"
+SOURCE_ROOT = pathlib.Path("/opt/devbox-anywhere")
+STATE_DIR = pathlib.Path("/data/devbox/install")
+STATE_ANCESTRY = (pathlib.Path("/data"), pathlib.Path("/data/devbox"), STATE_DIR)
+ENV_FILE = STATE_DIR / "compose.env"
+EXPECTED_STATE_OWNER = 0
+JSON_REQUESTED = "--json" in sys.argv[1:]
+
+
+def check(check_id: str, passed: bool, summary: str) -> dict[str, str]:
+    return {"id": check_id, "status": "pass" if passed else "fail", "summary": summary}
+
+
+def emit_error(command: str, message: str, exit_code: int, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps({
+            "schema_version": SCHEMA_VERSION,
+            "command": command,
+            "ok": False,
+            "error": {"code": exit_code, "message": message},
+        }, sort_keys=True))
+    else:
+        print(f"ERROR: {message}", file=sys.stderr)
+    return exit_code
+
+
+def run(command: list[str], *, clean: bool = False) -> subprocess.CompletedProcess[str]:
+    env = {
+        "PATH": SAFE_PATH,
+        "HOME": "/root",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "DOCKER_CONFIG": DOCKER_CONFIG,
+    } if clean else None
+    try:
+        return subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(command, 124, "", "command timed out")
+
+
+def available(name: str) -> str | None:
+    return shutil.which(name, path=SAFE_PATH)
+
+
+def docker_result(docker: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return run([docker, "--context", "default", *arguments], clean=True)
+
+
+def git_result(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    git = available("git")
+    if not git:
+        return subprocess.CompletedProcess(["git", *arguments], 127, "", "Git is unavailable")
+    return run([
+        git,
+        f"--git-dir={ROOT / '.git'}",
+        f"--work-tree={ROOT}",
+        "-c", "core.fsmonitor=false",
+        "-c", "core.hooksPath=/dev/null",
+        *arguments,
+    ], clean=True)
+
+
+def preflight(as_json: bool) -> int:
+    checks: list[dict[str, str]] = []
+    uname = available("uname")
+    linux = bool(uname and run([uname, "-s"], clean=True).stdout.strip() == "Linux")
+    checks.append(check("os.linux", linux, "Linux host" if linux else "Linux is required"))
+
+    tools: dict[str, str | None] = {name: available(name) for name in ("python3", "git", "docker", "openssl")}
+    for name in ("python3", "git", "docker", "openssl"):
+        checks.append(check(f"{name}.available", tools[name] is not None, f"{name} is available" if tools[name] else f"{name} is missing"))
+
+    compose_ok = False
+    daemon_ok = False
+    if tools["docker"]:
+        compose_ok = docker_result(tools["docker"], ["compose", "version"]).returncode == 0
+        daemon_ok = docker_result(tools["docker"], ["info"]).returncode == 0
+    checks.append(check("compose.v2", compose_ok, "Docker Compose v2 is available" if compose_ok else "Docker Compose v2 is unavailable"))
+    checks.append(check("docker.daemon", daemon_ok, "Docker daemon is reachable" if daemon_ok else "Docker daemon is unreachable"))
+
+    report: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "command": "preflight",
+        "ok": all(item["status"] == "pass" for item in checks),
+        "source": {"path": str(ROOT)},
+        "network": {"web_bind": "127.0.0.1", "ssh_bind": "127.0.0.1"},
+        "checks": checks,
+    }
+    if as_json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        for item in checks:
+            print(f"{item['status'].upper():4} {item['id']}: {item['summary']}")
+    return 0 if report["ok"] else 1
+
+
+def plan(as_json: bool, approved_commit: str, expose_ssh: bool) -> int:
+    if not re.fullmatch(r"[0-9a-f]{40}", approved_commit):
+        return emit_error("plan", "--approved-commit requires an exact 40-character lowercase commit SHA", 2, as_json)
+    commit = git_result(["cat-file", "-e", f"{approved_commit}^{{commit}}"])
+    installer = git_result(["cat-file", "-e", f"{approved_commit}:scripts/install-devbox"])
+    head = git_result(["rev-parse", "HEAD"])
+    if commit.returncode != 0 or installer.returncode != 0:
+        return emit_error("plan", "approved commit is not present as an installer-bearing commit in this repository", 1, as_json)
+    if head.returncode != 0 or head.stdout.strip() != approved_commit:
+        return emit_error("plan", "inspected checkout HEAD does not match the approved commit", 1, as_json)
+    ssh_bind = "0.0.0.0" if expose_ssh else "127.0.0.1"
+    approvals = ["sudo", "container build/start"]
+    if expose_ssh:
+        approvals.append("firewall/public SSH exposure")
+    command = f"sudo /opt/devbox-anywhere/scripts/install-devbox --yes --approved-commit {approved_commit}"
+    if expose_ssh:
+        command += " --expose-ssh"
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "command": "plan",
+        "ok": True,
+        "mutates": False,
+        "approved_commit": approved_commit,
+        "source_path": "/opt/devbox-anywhere",
+        "data_root": "/data/devbox",
+        "network": {"web_bind": "127.0.0.1", "ssh_bind": ssh_bind},
+        "approval_required": approvals,
+        "install_command": command,
+    }
+    if as_json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        print(f"Approved commit: {approved_commit}")
+        print(f"Web: 127.0.0.1:8080; SSH: {ssh_bind}:2222")
+        print(f"Command after approval: {command}")
+    return 0
+
+
+def deployment_settings() -> dict[str, str]:
+    allowed = {"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"}
+    settings: dict[str, str] = {}
+    for path in STATE_ANCESTRY:
+        try:
+            state = path.lstat()
+        except OSError:
+            return settings
+        if not stat.S_ISDIR(state.st_mode) or stat.S_ISLNK(state.st_mode):
+            return settings
+        if state.st_uid != EXPECTED_STATE_OWNER or state.st_mode & 0o022:
+            return settings
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(ENV_FILE, flags)
+    except OSError:
+        return settings
+    try:
+        state = os.fstat(descriptor)
+        if not stat.S_ISREG(state.st_mode) or state.st_uid != EXPECTED_STATE_OWNER or state.st_mode & 0o077:
+            return settings
+        with os.fdopen(descriptor, "r", encoding="utf-8", errors="strict") as stream:
+            descriptor = -1
+            content = stream.read(65537)
+        if len(content) > 65536:
+            return settings
+    except (OSError, UnicodeError):
+        return settings
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    for line in content.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in allowed:
+            if key in settings:
+                return {}
+            settings[key] = value
+    if settings.get("DEVBOX_DATA_ROOT") != "/data/devbox":
+        return {}
+    if settings.get("DEVBOX_WEB_BIND") != "127.0.0.1":
+        return {}
+    if settings.get("DEVBOX_SSH_BIND") not in {"127.0.0.1", "0.0.0.0"}:
+        return {}
+    return settings
+
+
+def verify_report() -> dict[str, Any]:
+    checks: list[dict[str, str]] = []
+    settings = deployment_settings()
+    state_ok = set(settings) == {"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"}
+    checks.append(check("state.file", state_ok, "installer state and ancestry are safe" if state_ok else "installer state or ancestry is missing or unsafe"))
+    docker = available("docker")
+    if not docker:
+        for check_id, summary in (
+            ("container.running", "Docker is missing"),
+            ("network.bindings", "Docker is missing"),
+            ("storage.mounts", "Docker is missing"),
+            ("helper.devbox", "Docker is missing"),
+            ("helper.devbox-relink", "Docker is missing"),
+            ("service.http", "Docker is missing"),
+            ("service.ssh", "Docker is missing"),
+        ):
+            checks.append(check(check_id, False, summary))
+    else:
+        def docker_ok(arguments: list[str]) -> bool:
+            return docker_result(docker, arguments).returncode == 0
+
+        running_result = docker_result(docker, ["inspect", "-f", "{{.State.Running}}", "devbox"])
+        running = running_result.returncode == 0 and running_result.stdout.strip() == "true"
+        checks.append(check("container.running", running, "devbox container is running" if running else "devbox container is not running"))
+        bindings_result = docker_result(docker, ["inspect", "--format", "{{json .NetworkSettings.Ports}}", "devbox"])
+        bindings_ok = False
+        if bindings_result.returncode == 0 and state_ok:
+            try:
+                actual_bindings = json.loads(bindings_result.stdout)
+            except (json.JSONDecodeError, TypeError):
+                actual_bindings = None
+            expected_bindings = {
+                "8080/tcp": [{"HostIp": settings["DEVBOX_WEB_BIND"], "HostPort": "8080"}],
+                "22/tcp": [{"HostIp": settings["DEVBOX_SSH_BIND"], "HostPort": "2222"}],
+            }
+            bindings_ok = actual_bindings == expected_bindings
+        checks.append(check(
+            "network.bindings",
+            bindings_ok,
+            "Docker port bindings match installer state" if bindings_ok else "Docker port bindings differ from installer state",
+        ))
+        mounts_result = docker_result(docker, ["inspect", "--format", "{{json .Mounts}}", "devbox"])
+        mounts_ok = False
+        if mounts_result.returncode == 0:
+            try:
+                mounts = json.loads(mounts_result.stdout)
+            except (json.JSONDecodeError, TypeError):
+                mounts = None
+            expected_mounts = {
+                ("/data/devbox/project", "/home/coder/project"),
+                ("/data/devbox/dot-local", "/home/coder/.local"),
+                ("/data/devbox/claude", "/home/coder/.claude"),
+                ("/data/devbox/codex", "/home/coder/.codex"),
+                ("/data/devbox/ssh", "/home/coder/.ssh"),
+            }
+            if isinstance(mounts, list) and len(mounts) == len(expected_mounts):
+                actual_mounts = {
+                    (item.get("Source"), item.get("Destination"))
+                    for item in mounts
+                    if isinstance(item, dict) and item.get("Type") == "bind" and item.get("RW") is True
+                }
+                mounts_ok = actual_mounts == expected_mounts
+        checks.append(check(
+            "storage.mounts",
+            mounts_ok,
+            "Docker mounts match fixed persistent paths" if mounts_ok else "Docker mounts differ from fixed persistent paths",
+        ))
+        for helper in ("devbox", "devbox-relink"):
+            ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"])
+            checks.append(check(f"helper.{helper}", ok, f"{helper} helper is executable" if ok else f"{helper} helper is unavailable"))
+        http_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"])
+        ssh_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"])
+        checks.append(check("service.http", http_ok, "code-server responds inside the container" if http_ok else "code-server readiness failed"))
+        checks.append(check("service.ssh", ssh_ok, "SSH responds inside the container" if ssh_ok else "SSH readiness failed"))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "command": "verify",
+        "ok": all(item["status"] == "pass" for item in checks),
+        "network": {
+            "web_bind": settings.get("DEVBOX_WEB_BIND", "unknown"),
+            "ssh_bind": settings.get("DEVBOX_SSH_BIND", "unknown"),
+        },
+        "checks": checks,
+    }
+
+
+def verify(as_json: bool) -> int:
+    report = verify_report()
+    if as_json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        for item in report["checks"]:
+            print(f"{item['status'].upper():4} {item['id']}: {item['summary']}")
+    return 0 if report["ok"] else 1
+
+
+def diagnose(as_json: bool) -> int:
+    verification = verify_report()
+    failed = [item["id"] for item in verification["checks"] if item["status"] != "pass"]
+    clean_docker = f"sudo env -i PATH={SAFE_PATH} HOME=/root LANG=C LC_ALL=C DOCKER_CONFIG={DOCKER_CONFIG} docker --context default"
+    recovery = [
+        f"{clean_docker} logs devbox",
+        f"{clean_docker} compose --env-file {ENV_FILE} -f {SOURCE_ROOT / 'stack/docker-compose.yml'} ps",
+        "./scripts/devbox-anywhere verify --json",
+    ]
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "command": "diagnose",
+        "ok": not failed,
+        "failed_checks": failed,
+        "recovery_commands": recovery if failed else [],
+        "note": "Commands may expose operational logs; inspect locally and do not paste credentials into chat.",
+    }
+    if as_json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        print("No failures detected." if not failed else f"Failed checks: {', '.join(failed)}")
+        for command in report["recovery_commands"]:
+            print(f"  {command}")
+    return 0 if report["ok"] else 1
+
+
+def not_implemented(command: str) -> int:
+    print(f"ERROR: {command} is not implemented yet", file=sys.stderr)
+    return 2
+
+
+class HarnessParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        if JSON_REQUESTED:
+            known = {"preflight", "plan", "verify", "diagnose"}
+            command = next((item for item in sys.argv[1:] if item in known), "unknown")
+            if "unrecognized arguments:" in message:
+                safe_message = "unknown option"
+            elif "invalid choice:" in message:
+                safe_message = "invalid command"
+            elif "required" in message:
+                safe_message = "required argument missing"
+            else:
+                safe_message = "invalid arguments"
+            emit_error(command, safe_message, 2, True)
+            self.exit(2)
+        if "unrecognized arguments:" in message:
+            message = "unknown option"
+        self.print_usage(sys.stderr)
+        self.exit(2, f"ERROR: {message}\n")
+
+
+def parser() -> argparse.ArgumentParser:
+    result = HarnessParser(
+        prog="devbox-anywhere",
+        description="Agent-facing preflight, plan, verification, and diagnosis harness.",
+    )
+    subcommands = result.add_subparsers(dest="command", required=True)
+    for name in ("preflight", "plan", "verify", "diagnose"):
+        command = subcommands.add_parser(name)
+        command.add_argument("--json", action="store_true", help="emit schema-versioned JSON")
+        if name == "plan":
+            command.add_argument("--approved-commit", required=True)
+            command.add_argument("--expose-ssh", action="store_true")
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    if args.command == "preflight":
+        return preflight(args.json)
+    if args.command == "plan":
+        return plan(args.json, args.approved_commit, args.expose_ssh)
+    if args.command == "verify":
+        return verify(args.json)
+    if args.command == "diagnose":
+        return diagnose(args.json)
+    return not_implemented(args.command)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

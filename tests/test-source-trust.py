@@ -2,6 +2,8 @@
 """Functional proof for privileged source and environment trust gates."""
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 import subprocess
 from typing import Any, Callable, cast
@@ -15,6 +17,10 @@ namespace: dict[str, object] = {
 source = pathlib.Path(__file__).with_name("test-install-devbox-lifecycle.py").read_text()
 exec(compile(source.split("success, log, data = run", 1)[0], "fixture_helpers", "exec"), namespace)
 prepare = cast(Callable[..., Any], namespace["prepare"])
+TEST_GIT_ENV = os.environ.copy()
+for key in tuple(TEST_GIT_ENV):
+    if key.startswith("GIT_"):
+        TEST_GIT_ENV.pop(key)
 
 
 def invoke(installer, env, approved):
@@ -46,7 +52,12 @@ expect_rejected(
 
 
 def hidden_change(repo, env, approved):
-    subprocess.run(["git", "update-index", "--skip-worktree", "stack/docker-compose.yml"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "update-index", "--skip-worktree", "stack/docker-compose.yml"],
+        cwd=repo,
+        env=TEST_GIT_ENV,
+        check=True,
+    )
     (repo / "stack/docker-compose.yml").write_text("services: {}\n")
 
 
@@ -101,6 +112,13 @@ env.update(
 result = invoke(installer, env, approved)
 assert result.returncode == 0, result.stderr
 assert not marker.exists()
-assert "poison_root=unset poison_web=unset poison_password=unset" in log.read_text()
+records = [json.loads(line) for line in log.read_text().splitlines()]
+assert records, "docker_sanitization_observations"
+for record in records:
+    assert record["poison_root"] is None, "docker_ambient_data_root"
+    assert record["poison_web"] is None, "docker_ambient_web_bind"
+    assert record["poison_password"] is None, "docker_ambient_password"
+    assert record["docker_config"] == "/nonexistent/devbox-anywhere-docker-config", "docker_config"
+    assert record["args"][:2] == ["--context", "default"], "docker_context"
 
 print("source_trust=PASS")
