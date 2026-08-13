@@ -11,7 +11,8 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_HARNESS = ROOT / "scripts" / "devbox-anywhere"
 HARNESS = SOURCE_HARNESS
-SHA = "c2c1caeebfc55047233cbdeae11670e07cbede75"
+SHA = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+assert len(SHA) == 40
 
 def run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run([str(HARNESS), *args], cwd=ROOT, env=env, capture_output=True, text=True)
