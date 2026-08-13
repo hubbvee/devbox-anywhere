@@ -3,7 +3,8 @@
 # reverse proxy (Caddy, Traefik, nginx) in front for HTTPS. With Coolify you don't need
 # this file — Coolify builds from stack/Dockerfile and handles TLS for you (see docs/02).
 #
-# First, create the host data dirs owned by uid/gid 1000 (the `coder` user):
+# `scripts/install-devbox` automates this file. For manual use, first create the host
+# data dirs owned by uid/gid 1000 (the `coder` user):
 #   sudo mkdir -p /data/devbox/{project,dot-local,claude,codex,ssh}
 #   sudo chown -R 1000:1000 /data/devbox
 
@@ -16,14 +17,14 @@ services:
       # Web login password for code-server. Put a long random one here or in an .env file.
       - PASSWORD=${DEVBOX_PASSWORD:?set DEVBOX_PASSWORD in .env}
     ports:
-      - "127.0.0.1:8080:8080"   # code-server web UI — keep loopback-only; proxy adds HTTPS
-      - "2222:22"               # direct key-only sshd into the container
+      - "${DEVBOX_WEB_BIND:-127.0.0.1}:8080:8080" # keep loopback-only; proxy adds HTTPS
+      - "${DEVBOX_SSH_BIND:-127.0.0.1}:2222:22"   # opt in explicitly before public exposure
     volumes:
       # HOST BIND MOUNTS, not named volumes. Named volumes are keyed to the app instance
       # and silently start empty after a delete+recreate; fixed host paths survive
       # redeploys, reboots, AND full rebuilds. See docs/03 and docs/09.
-      - /data/devbox/project:/home/coder/project
-      - /data/devbox/dot-local:/home/coder/.local
-      - /data/devbox/claude:/home/coder/.claude
-      - /data/devbox/codex:/home/coder/.codex
-      - /data/devbox/ssh:/home/coder/.ssh
+      - ${DEVBOX_DATA_ROOT:-/data/devbox}/project:/home/coder/project
+      - ${DEVBOX_DATA_ROOT:-/data/devbox}/dot-local:/home/coder/.local
+      - ${DEVBOX_DATA_ROOT:-/data/devbox}/claude:/home/coder/.claude
+      - ${DEVBOX_DATA_ROOT:-/data/devbox}/codex:/home/coder/.codex
+      - ${DEVBOX_DATA_ROOT:-/data/devbox}/ssh:/home/coder/.ssh

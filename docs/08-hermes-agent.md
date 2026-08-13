@@ -34,7 +34,9 @@ tmuxctl broadcast --yes "git fetch"         # every session; explicit opt-in req
 ```
 
 Install inside the container (`~/.local/bin`, persists) — or run it from your laptop
-against the box with `export HERMES_SSH=devbox` (any host with the 2222 SSH alias).
+against the box with `export HERMES_SSH=devbox`. With the private installer default, this
+alias uses `127.0.0.1:2222` while the host tunnel is open. A server-IP alias is valid only
+with explicit `--expose-ssh`/Coolify mapping and a restrictive firewall.
 
 ## Making an AI agent the operator
 

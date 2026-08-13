@@ -23,6 +23,10 @@ just sent you."
 
 ## Level 0 — plain scp/rsync (works from anything with the 2222 key)
 
+These commands use the `devbox` SSH alias configured in docs/05. With the installer's
+private default, that alias points to `127.0.0.1:2222` while the host SSH tunnel is open;
+it points directly to the server only in explicit `--expose-ssh` mode.
+
 ```bash
 scp report.pdf devbox:project/_inbox/
 rsync -av --exclude node_modules ./myproject/ devbox:project/myproject/
@@ -65,7 +69,8 @@ the agent socket. If drops don't arrive, that line is where to look.
 
 ## From a phone
 
-- **Termius** has a built-in SFTP tab — connect to the `devbox` (port 2222) host,
+- **Termius** has a built-in SFTP tab — connect through the private tunnel, or directly to
+  the `devbox` port 2222 host only in explicit `--expose-ssh` mode,
   upload into `project/_inbox/`.
 - Or the browser IDE: code-server accepts drag/upload into the file explorer directly.
 

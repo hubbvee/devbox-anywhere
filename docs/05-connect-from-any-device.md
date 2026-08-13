@@ -26,8 +26,14 @@ container lookup runs on your machine instead of the server.)
 
 ## C. Direct SSH into the container (port 2222)
 
+The agent-guided installer binds this port to server loopback by default. In that mode,
+first open `ssh -L 2222:127.0.0.1:2222 HOST_USER@YOUR_SERVER_IP`, then connect to
+`127.0.0.1:2222` from another terminal. The direct server-IP instructions below apply only
+after an explicit `--expose-ssh` installation and a restrictive firewall rule.
+
 The image runs its own key-only sshd, published as host port `2222`. Add your key and
-an alias:
+an alias. The example below is for deliberate public-bind mode; for the private default,
+keep the tunnel open and use `HostName 127.0.0.1` instead:
 
 ```bash
 # on the SERVER (host): append your device's pubkey to the persisted authorized_keys
@@ -76,7 +82,9 @@ names are sanitized (`[A-Za-z0-9._-]+`) against injection. Lost phone = delete t
 ### Host 2 — "devbox shell" (full container shell)
 
 Append the same phone pubkey to `/data/devbox/ssh/authorized_keys` (the *container*
-sshd), and add a second Termius host: `YOUR_SERVER_IP`, port `2222`, user `coder`.
+sshd). Direct Termius access to `YOUR_SERVER_IP`, port `2222`, user `coder` requires
+explicit `--expose-ssh` mode and a restrictive firewall. With the private default, use a
+Termius host/port-forwarding setup capable of maintaining the host SSH tunnel first.
 This gives a normal shell for file management and one-off commands; from there
 `devbox <name>` works like everywhere else.
 
