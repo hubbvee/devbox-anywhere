@@ -5,7 +5,8 @@
 # Runs in two places:
 #   INSIDE the devbox (default)      — talks to tmux directly.
 #   Anywhere with SSH to the devbox  — set HERMES_SSH, e.g.:  export HERMES_SSH=devbox
-#                                      (an ssh alias for coder@YOUR_SERVER_IP -p 2222)
+#                                      (private default: tunnel + coder@127.0.0.1:2222;
+#                                      server IP only with explicit public mapping/firewall)
 #
 # Usage:
 #   tmuxctl ls                     list sessions (name, attached, activity)

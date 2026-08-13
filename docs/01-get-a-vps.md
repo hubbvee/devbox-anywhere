@@ -48,9 +48,9 @@ ssh-copy-id youruser@YOUR_SERVER_IP
 #    PermitRootLogin no
 systemctl restart ssh
 
-# 4. Basic firewall — leave 80/443 for the web UI + HTTPS, 22 for SSH,
-#    2222 for the devbox container's direct sshd (docs/05), 8000 for Coolify setup.
-ufw allow 22,80,443,2222,8000/tcp
+# 4. Basic firewall — leave 80/443 for HTTPS, 22 for host SSH, and 8000 only
+#    while setting up Coolify. Port 2222 stays closed for the private installer default.
+ufw allow 22,80,443,8000/tcp
 ufw enable
 
 # 5. Updates
@@ -59,6 +59,9 @@ apt update && apt upgrade -y
 
 Optional but sensible: `apt install fail2ban` (default config is fine), and unattended
 security upgrades (`dpkg-reconfigure -plow unattended-upgrades`).
+
+Open port 2222 only if you later choose `--expose-ssh`, and restrict it to trusted source
+addresses rather than allowing it globally.
 
 Generate a **dedicated key per device** you'll connect from (Mac, laptop, phone). One
 key per device means you can revoke a lost phone without re-keying everything:

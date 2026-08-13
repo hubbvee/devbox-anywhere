@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Guided, resumable plain-Docker installer for humans and coding agents.
+set -euo pipefail
+umask 077
+
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+DATA_ROOT=/data/devbox
+WEB_BIND=127.0.0.1
+SSH_BIND=127.0.0.1
+ASSUME_YES=0
+DRY_RUN=0
+APPROVED_COMMIT=
+
+usage() {
+  cat <<'EOF'
+Usage: sudo ./scripts/install-devbox [options]
+
+Safely prepares persistent storage, builds Devbox Anywhere with Docker Compose,
+installs the in-container helpers, and verifies the result. Re-running is safe.
+
+Options:
+  --yes                 accept the displayed plan (required without a TTY)
+  --dry-run             print the resolved plan without changing anything
+  --expose-ssh          bind SSH to 0.0.0.0 instead of loopback; firewall first
+  --approved-commit SHA exact reviewed commit authorized by the user
+  -h, --help            show this help
+
+The installer never accepts passwords on the command line. It generates a random
+code-server password and stores it in an owner-only environment file.
+EOF
+}
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+need_arg() { [[ $# -ge 2 && -n ${2:-} ]] || die "$1 requires a value"; }
+
+while (($#)); do
+  case "$1" in
+    --yes) ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+
+    --expose-ssh) SSH_BIND=0.0.0.0; shift ;;
+    --approved-commit) need_arg "$@"; APPROVED_COMMIT=$2; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+[[ $APPROVED_COMMIT =~ ^[0-9a-f]{40}$ ]] || die "--approved-commit requires an exact 40-character lowercase commit SHA"
+
+STATE_DIR=$DATA_ROOT/install
+ENV_FILE=$STATE_DIR/compose.env
+
+cat <<EOF
+Devbox Anywhere installation plan
+  repository: $REPO_ROOT
+  approved commit: $APPROVED_COMMIT
+  persistent data: $DATA_ROOT
+  browser: $WEB_BIND:8080 (HTTP; put authenticated HTTPS in front)
+  SSH: $SSH_BIND:2222 (key-only; no key is added automatically)
+  credentials: $ENV_FILE (owner-only; value not printed)
+  action: build and start stack/docker-compose.yml, then verify it
+EOF
+
+if [[ $SSH_BIND == 0.0.0.0 || $SSH_BIND == :: ]]; then
+  printf 'WARNING: SSH will listen on every interface. Restrict port 2222 with a firewall.\n'
+fi
+
+if ((DRY_RUN)); then
+  cat <<EOF
+
+Resolved Compose values (password intentionally redacted):
+DEVBOX_PASSWORD=<generated-or-preserved>
+DEVBOX_DATA_ROOT=$DATA_ROOT
+DEVBOX_WEB_BIND=$WEB_BIND
+DEVBOX_SSH_BIND=$SSH_BIND
+port: $WEB_BIND:8080:8080
+port: $SSH_BIND:2222:22
+volume: $DATA_ROOT/project:/home/coder/project
+EOF
+  if ((!ASSUME_YES)) && [[ ! -t 0 ]]; then
+    die "noninteractive installation requires --yes"
+  fi
+  exit 0
+fi
+
+if ((!ASSUME_YES)); then
+  [[ -t 0 ]] || die "noninteractive installation requires --yes"
+  read -r -p 'Continue? [y/N] ' answer
+  [[ $answer == y || $answer == Y ]] || die "cancelled"
+fi
+
+[[ $(uname -s) == Linux ]] || die "the server installer supports Linux; use the guide for other hosts"
+if ((EUID != 0)); then die "run this installer with sudo so it can prepare $DATA_ROOT"; fi
+SAFE_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH=$SAFE_PATH
+export PATH
+command -v git >/dev/null || die "Git is required to verify the approved source"
+GIT=$(command -v git)
+command -v docker >/dev/null || die "Docker is not installed"
+DOCKER=$(command -v docker)
+compose_env=(env -i PATH="$SAFE_PATH" HOME=/root)
+git_env=(env -i PATH="$SAFE_PATH" HOME=/root GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null)
+git_cmd=("${git_env[@]}" "$GIT" --git-dir="$REPO_ROOT/.git" --work-tree="$REPO_ROOT" \
+  -c core.fsmonitor=false -c core.hooksPath=/dev/null)
+docker_cmd=("${compose_env[@]}" "$DOCKER")
+"${docker_cmd[@]}" compose version >/dev/null 2>&1 || die "Docker Compose v2 is not available"
+command -v openssl >/dev/null || die "openssl is required to generate the browser password"
+"${docker_cmd[@]}" info >/dev/null 2>&1 || die "the Docker daemon is not reachable"
+
+# Root Docker must never consume a mutable agent-owned checkout. The documented workflow
+# creates this checkout as root. Validate the whole same-filesystem tree before Docker.
+[[ $REPO_ROOT == /opt/devbox-anywhere ]] || die "privileged installation must run from /opt/devbox-anywhere"
+[[ ! -L /opt && $(stat -c %u /opt) == 0 ]] || die "/opt must be a root-owned non-symlink directory"
+opt_mode=$(stat -c %a /opt)
+(( (8#$opt_mode & 0022) == 0 )) || die "/opt must not be group/other writable"
+unset opt_mode
+[[ ! -L $REPO_ROOT ]] || die "repository root must not be a symlink"
+while IFS= read -r -d '' source_path; do
+  [[ $(stat -c %u "$source_path") == 0 ]] || die "source input is not root-owned: $source_path"
+  source_mode=$(stat -c %a "$source_path")
+  (( (8#$source_mode & 0022) == 0 )) || die "source input is group/other writable: $source_path"
+done < <(find "$REPO_ROOT" -xdev -print0)
+unset source_mode source_path
+for source_path in stack/docker-compose.yml stack/Dockerfile stack/entrypoint.sh scripts/devbox scripts/devbox-relink; do
+  [[ -f $REPO_ROOT/$source_path && ! -L $REPO_ROOT/$source_path ]] \
+    || die "required source input must be a regular non-symlink file: $source_path"
+done
+actual_commit=$("${git_cmd[@]}" rev-parse HEAD)
+[[ $actual_commit == "$APPROVED_COMMIT" ]] || die "checkout HEAD $actual_commit does not match approved commit $APPROVED_COMMIT"
+[[ -z $("${git_cmd[@]}" status --porcelain=v1 --untracked-files=all) ]] \
+  || die "approved checkout is not clean"
+verify_dir=$(mktemp -d /tmp/devbox-source.XXXXXX)
+trap 'rm -rf "$verify_dir"' EXIT
+"${git_cmd[@]}" archive "$APPROVED_COMMIT" | tar -x -C "$verify_dir"
+diff -qr --no-dereference --exclude=.git "$verify_dir" "$REPO_ROOT" >/dev/null \
+  || die "checkout bytes differ from approved commit"
+rm -rf "$verify_dir"
+trap - EXIT
+unset actual_commit source_path verify_dir
+
+[[ ! -L /data ]] || die "/data must not be a symlink"
+install -d -o 0 -g 0 -m 0755 /data
+[[ $(stat -c %u /data) == 0 ]] || die "/data must be owned by root"
+data_mode=$(stat -c %a /data)
+(( (8#$data_mode & 0022) == 0 )) || die "/data must not be group/other writable"
+unset data_mode
+[[ ! -L $DATA_ROOT ]] || die "data root must not be a symlink"
+install -d -m 0750 "$DATA_ROOT"
+[[ $(stat -c %u "$DATA_ROOT") == 0 ]] || die "$DATA_ROOT must be owned by root"
+data_root_mode=$(stat -c %a "$DATA_ROOT")
+(( (8#$data_root_mode & 0022) == 0 )) || die "$DATA_ROOT must not be group/other writable"
+unset data_root_mode
+for path in project dot-local claude codex ssh; do
+  [[ ! -L $DATA_ROOT/$path ]] || die "$DATA_ROOT/$path must not be a symlink"
+  install -d -o 1000 -g 1000 -m 0700 "$DATA_ROOT/$path"
+done
+[[ ! -L $STATE_DIR ]] || die "$STATE_DIR must not be a symlink"
+install -d -o 0 -g 0 -m 0700 "$STATE_DIR"
+[[ $(stat -c %u "$STATE_DIR") == 0 ]] || die "$STATE_DIR must be owned by root"
+state_mode=$(stat -c %a "$STATE_DIR")
+(( (8#$state_mode & 0077) == 0 )) || die "$STATE_DIR must not be accessible to group/other"
+unset state_mode
+
+if [[ -L $ENV_FILE ]]; then die "$ENV_FILE must not be a symlink"; fi
+if [[ -e $ENV_FILE && ! -f $ENV_FILE ]]; then die "$ENV_FILE is not a regular file"; fi
+if [[ -f $ENV_FILE ]]; then
+  [[ $(stat -c %u "$ENV_FILE") == 0 ]] || die "$ENV_FILE must be owned by root"
+  env_mode=$(stat -c %a "$ENV_FILE")
+  (( (8#$env_mode & 0077) == 0 )) || die "$ENV_FILE must not be accessible to group/other"
+  unset env_mode
+fi
+tmp_env=$(mktemp "$STATE_DIR/compose.env.XXXXXX")
+chmod 0600 "$tmp_env"
+trap 'rm -f "$tmp_env"' EXIT
+if [[ ! -f $ENV_FILE ]]; then
+  password=$(openssl rand -base64 36 | tr -d '\n')
+  cat >"$tmp_env" <<EOF
+DEVBOX_PASSWORD=$password
+DEVBOX_DATA_ROOT=$DATA_ROOT
+DEVBOX_WEB_BIND=$WEB_BIND
+DEVBOX_SSH_BIND=$SSH_BIND
+EOF
+  unset password
+else
+  grep -q '^DEVBOX_PASSWORD=' "$ENV_FILE" || die "$ENV_FILE lacks DEVBOX_PASSWORD"
+  # Preserve the password but refresh non-secret deployment settings.
+  password_line=$(grep -m1 '^DEVBOX_PASSWORD=' "$ENV_FILE")
+  cat >"$tmp_env" <<EOF
+$password_line
+DEVBOX_DATA_ROOT=$DATA_ROOT
+DEVBOX_WEB_BIND=$WEB_BIND
+DEVBOX_SSH_BIND=$SSH_BIND
+EOF
+  unset password_line
+fi
+mv -f "$tmp_env" "$ENV_FILE"
+trap - EXIT HUP INT TERM
+
+compose=("${docker_cmd[@]}" compose --env-file "$ENV_FILE" -f "$REPO_ROOT/stack/docker-compose.yml")
+"${compose[@]}" build --pull=false
+"${compose[@]}" up -d
+
+for helper in devbox devbox-relink; do
+  "${docker_cmd[@]}" cp "$REPO_ROOT/scripts/$helper" "devbox:/tmp/$helper"
+  "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+    /usr/bin/install -m 0755 "/tmp/$helper" "/home/coder/.local/bin/$helper"
+  "${docker_cmd[@]}" exec --env PATH=/usr/sbin:/usr/bin:/sbin:/bin devbox /usr/bin/rm -f "/tmp/$helper"
+done
+
+for attempt in $(seq 1 30); do
+  if [[ $("${docker_cmd[@]}" inspect -f '{{.State.Running}}' devbox 2>/dev/null) == true ]] \
+    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox /bin/sh -c \
+      '/usr/bin/tmux -V >/dev/null && /usr/bin/test -x "$HOME/.local/bin/devbox" && /usr/bin/test -x "$HOME/.local/bin/devbox-relink"' 2>/dev/null \
+    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+      /usr/bin/wget -q --spider http://127.0.0.1:8080/ 2>/dev/null \
+    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+      /usr/bin/ssh-keyscan -T 2 -p 22 127.0.0.1 >/dev/null 2>&1; then
+    break
+  fi
+  [[ $attempt -lt 30 ]] || die "container did not become ready; inspect: docker logs devbox"
+  sleep 2
+done
+
+cat <<EOF
+
+Installation complete.
+  Browser (local/server): http://$WEB_BIND:8080
+  Password file: $ENV_FILE
+  Read password locally: sudo sed -n 's/^DEVBOX_PASSWORD=//p' '$ENV_FILE'
+  Add an SSH public key: sudo sh -c 'cat >> "$DATA_ROOT/ssh/authorized_keys"'
+  Status: docker compose --env-file '$ENV_FILE' -f '$REPO_ROOT/stack/docker-compose.yml' ps
+EOF
+
+if [[ $SSH_BIND == 127.0.0.1 ]]; then
+  cat <<'EOF'
+  Default private SSH access:
+    1. ssh -L 2222:127.0.0.1:2222 HOST_USER@SERVER_ADDRESS
+    2. In another terminal: ssh -p 2222 coder@127.0.0.1
+EOF
+else
+  printf '  Direct SSH after adding a key: ssh -p 2222 coder@SERVER_ADDRESS\n'
+fi
+
+cat <<'EOF'
+
+Do not expose port 8080 directly. Put authenticated HTTPS in front of it or keep it
+loopback-only. Expose SSH only after configuring a restrictive firewall.
+EOF

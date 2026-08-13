@@ -5,6 +5,9 @@ The devbox is one container: [code-server](https://github.com/coder/code-server)
 [`stack/Dockerfile`](../stack/Dockerfile). The browser IDE is the *screen*; tmux is the
 *brain* that keeps everything alive when you disconnect.
 
+For the supported almost-one-shot plain-Docker path, including instructions an AI agent
+can follow safely, start with [00 — Agent-guided installation](00-agent-guided-install.md).
+
 ## 1. Prepare persistent storage on the HOST first
 
 **This is the single most important step in the whole guide.** Use fixed host paths
@@ -42,7 +45,8 @@ the same five paths.
    ignore the CMD bind-addr and listen on `80`; if so set Ports Exposes to `80`.
 4. **Env var:** `PASSWORD` = a long random string (25+ chars). This is the browser
    login for the IDE.
-5. **Port mapping:** `2222:22` (the container's direct sshd — docs/05).
+5. **Port mapping:** `127.0.0.1:2222:22` by default. Use `2222:22` only for deliberate
+   direct access after restricting the host/provider firewall (see docs/05).
 6. **Storages:** add the five bind mounts from the table above
    (type *persistent*, with the host path set — host path non-null = bind mount).
 7. Deploy.

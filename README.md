@@ -13,10 +13,10 @@ and an orchestrator pattern ("Hermes") where one agent supervises every session.
                         ┌────────────────────────── YOUR VPS (OVH / Hetzner / any) ─┐
   Desktop browser ──────►  HTTPS (Coolify/Traefik + optional Cloudflare Access)     │
   Desktop terminal ─────►  ssh host → docker exec ─┐                                │
-  Laptop / VS Code ─────►  ssh :2222 (container) ──┤   ┌──────────────────────────┐ │
+  Laptop / VS Code ─────►  ssh :2222 (private tunnel by default) ─────────────────┐ │
   iPhone (Termius) ─────►  ssh :22 forced-command ─┼──►│  devbox container        │ │
        one-tap picker      "devbox-attach" menu    │   │  code-server (browser IDE)│ │
-  Any device w/ key ────►  ssh :2222 full shell ───┘   │  sshd :22 (key-only)     │ │
+  Any device w/ key ────►  direct :2222 only after explicit exposure/firewall ───┘ │
                         │                              │  tmux ── main            │ │
                         │   /data/devbox/* bind ──────►│       ├─ api    (agent)  │ │
                         │   mounts (survive rebuilds)  │       ├─ blog   (agent)  │ │
@@ -44,6 +44,21 @@ and an orchestrator pattern ("Hermes") where one agent supervises every session.
 
 ## Quick start
 
+### Ask an AI agent to install it
+
+Give Claude, Codex, Hermes, or another terminal-capable agent this repository URL and ask
+it to follow [`AGENTS.md`](AGENTS.md) and the
+**[agent-guided installation](docs/00-agent-guided-install.md)**. The supported installer
+shows a dry-run, keeps services loopback-only by default, asks before privileged/public
+changes, builds the Compose stack, installs helpers, and verifies the result. It does not
+use a blind `curl | sudo bash` path or print generated credentials.
+
+> The guided installer becomes publicly available only when a stable release containing
+> `scripts/install-devbox` is published. Current agents must verify that exact condition
+> and stop rather than falling back to an unreviewed branch.
+
+### Follow the full guide yourself
+
 1. **[Get a VPS](docs/01-get-a-vps.md)** — Ubuntu LTS, ~$5+/mo, 10 min of hardening.
 2. **[Install Coolify](docs/02-install-coolify.md)** — one command; gives you HTTPS +
    deploy UI. (Plain-Docker alternative included.)
@@ -68,11 +83,18 @@ and an orchestrator pattern ("Hermes") where one agent supervises every session.
 
 | Path | What |
 | --- | --- |
-| `docs/01–11` | The guide, in build order |
+| `docs/00–11` | Agent-guided install plus the full guide in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
 | `scripts/` | Server-side: `devbox`, `devbox-attach` (phone picker), `devbox-relink`, `hermes`, backup cron |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |
+| `tests/` | Installer acceptance and mocked lifecycle/failure checks |
+
+Run the repository checks with:
+
+```bash
+./tests/run.sh
+```
 
 ## Get a server
 

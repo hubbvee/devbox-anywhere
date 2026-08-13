@@ -1,7 +1,9 @@
 # Devbox Anywhere — desktop-side helpers (zsh; macOS + Linux).
 # Append this file's contents to ~/.zshrc (or source it), then edit the two variables.
 #
-# Assumes an ssh alias `devbox` in ~/.ssh/config for the container sshd:
+# Assumes an ssh alias `devbox` in ~/.ssh/config for the container sshd. The private
+# installer default requires a host tunnel and HostName 127.0.0.1. YOUR_SERVER_IP below
+# is valid only after explicit --expose-ssh/Coolify mapping plus a restrictive firewall:
 #   Host devbox
 #     HostName YOUR_SERVER_IP
 #     Port 2222
