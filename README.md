@@ -53,27 +53,52 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
-The agent-facing harness provides schema-versioned JSON for each stage:
+## New in v1.2.0: Hermes skill and agent harness
+
+Devbox Anywhere now includes two complementary agent-integration layers:
+
+- **A deterministic repository harness** at `scripts/devbox-anywhere`. It gives terminal-
+  capable agents schema-versioned JSON and stable check IDs instead of asking them to infer
+  readiness from prose or command output.
+- **A distributable Hermes umbrella skill** at `skills/devbox-anywhere/`. It guides release
+  selection, approval prompts, installation, verification, diagnosis, Telegram project
+  topics, coding-agent handoffs, backups, recovery, and rebuilds.
+
+The harness supports four commands:
 
 ```bash
 ./scripts/devbox-anywhere preflight --json
 ./scripts/devbox-anywhere plan --json --approved-commit EXACT_SHA
-./scripts/devbox-anywhere verify --json
-./scripts/devbox-anywhere diagnose --json
+sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json
+sudo /opt/devbox-anywhere/scripts/devbox-anywhere diagnose --json
 ```
 
-Once a stable release containing `skills/devbox-anywhere/` is published, Hermes users can
-install the umbrella skill from the verified stable checkout, including its operational
-references, with:
+- `preflight` checks Linux, required tools, Compose v2, and local Docker availability.
+- `plan` validates an exact installer-bearing commit and reports paths, listeners, required
+  approvals, and the authoritative installer command without changing the server.
+- `verify` validates trusted installer state, exact Docker ports and writable mounts, helper
+  installation, and real HTTP/SSH readiness.
+- `diagnose` reports the same stable check IDs and safe recovery information without trying
+  to repair or mutate the installation.
+
+The skill and harness do **not** replace `scripts/install-devbox`, bypass `sudo`, or turn
+Hermes into a sandbox. The Bash installer remains the only privileged installation engine;
+the user must still approve privileged operations and any public network exposure. Docker
+operations are pinned to the local `default` context with isolated configuration, and
+services remain loopback-only unless public SSH is explicitly requested.
+
+Starting with v1.2.0, Hermes users can install the umbrella skill from the same verified
+stable checkout used for the workflow, including all six operational references:
 
 ```bash
 install -d -m 0700 "$HOME/.hermes/skills/devbox-anywhere"
 cp -R ./skills/devbox-anywhere/. "$HOME/.hermes/skills/devbox-anywhere/"
 ```
 
-Do not use a mutable default-branch skill identifier for this workflow. Until the skill is
-in a stable release, agents must stop after discovery. Installation and deployment always
-require a stable installer-bearing release.
+Do not use a mutable default-branch skill identifier for this workflow. Resolve the stable
+tag and exact commit first, copy the skill from that checkout, and start a new Hermes
+session so its skill index refreshes. Installation and deployment always require a stable
+installer-bearing release.
 
 ### Follow the full guide yourself
 
@@ -103,10 +128,11 @@ require a stable installer-bearing release.
 | --- | --- |
 | `docs/00–11` | Agent-guided install plus the full guide in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
-| `scripts/` | Server-side: `devbox`, `devbox-attach` (phone picker), `devbox-relink`, `hermes`, backup cron |
+| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, tmux wrapper, backup cron |
+| `skills/devbox-anywhere/` | Hermes umbrella skill plus six operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |
-| `tests/` | Installer acceptance and mocked lifecycle/failure checks |
+| `tests/` | Installer, harness, skill, source-trust, lifecycle, and mutation checks |
 
 Run the repository checks with:
 
