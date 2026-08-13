@@ -53,9 +53,27 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
-> The guided installer becomes publicly available only when a stable release containing
-> `scripts/install-devbox` is published. Current agents must verify that exact condition
-> and stop rather than falling back to an unreviewed branch.
+The agent-facing harness provides schema-versioned JSON for each stage:
+
+```bash
+./scripts/devbox-anywhere preflight --json
+./scripts/devbox-anywhere plan --json --approved-commit EXACT_SHA
+./scripts/devbox-anywhere verify --json
+./scripts/devbox-anywhere diagnose --json
+```
+
+Once a stable release containing `skills/devbox-anywhere/` is published, Hermes users can
+install the umbrella skill from the verified stable checkout, including its operational
+references, with:
+
+```bash
+install -d -m 0700 "$HOME/.hermes/skills/devbox-anywhere"
+cp -R ./skills/devbox-anywhere/. "$HOME/.hermes/skills/devbox-anywhere/"
+```
+
+Do not use a mutable default-branch skill identifier for this workflow. Until the skill is
+in a stable release, agents must stop after discovery. Installation and deployment always
+require a stable installer-bearing release.
 
 ### Follow the full guide yourself
 

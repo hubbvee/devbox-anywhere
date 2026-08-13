@@ -92,17 +92,18 @@ fi
 [[ $(uname -s) == Linux ]] || die "the server installer supports Linux; use the guide for other hosts"
 if ((EUID != 0)); then die "run this installer with sudo so it can prepare $DATA_ROOT"; fi
 SAFE_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DOCKER_CONFIG=/nonexistent/devbox-anywhere-docker-config
 PATH=$SAFE_PATH
 export PATH
 command -v git >/dev/null || die "Git is required to verify the approved source"
 GIT=$(command -v git)
 command -v docker >/dev/null || die "Docker is not installed"
 DOCKER=$(command -v docker)
-compose_env=(env -i PATH="$SAFE_PATH" HOME=/root)
+compose_env=(env -i PATH="$SAFE_PATH" HOME=/root DOCKER_CONFIG="$DOCKER_CONFIG")
 git_env=(env -i PATH="$SAFE_PATH" HOME=/root GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null)
 git_cmd=("${git_env[@]}" "$GIT" --git-dir="$REPO_ROOT/.git" --work-tree="$REPO_ROOT" \
   -c core.fsmonitor=false -c core.hooksPath=/dev/null)
-docker_cmd=("${compose_env[@]}" "$DOCKER")
+docker_cmd=("${compose_env[@]}" "$DOCKER" --context default)
 "${docker_cmd[@]}" compose version >/dev/null 2>&1 || die "Docker Compose v2 is not available"
 command -v openssl >/dev/null || die "openssl is required to generate the browser password"
 "${docker_cmd[@]}" info >/dev/null 2>&1 || die "the Docker daemon is not reachable"
@@ -217,7 +218,7 @@ for attempt in $(seq 1 30); do
       /usr/bin/ssh-keyscan -T 2 -p 22 127.0.0.1 >/dev/null 2>&1; then
     break
   fi
-  [[ $attempt -lt 30 ]] || die "container did not become ready; inspect: docker logs devbox"
+  [[ $attempt -lt 30 ]] || die "container did not become ready; inspect: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default logs devbox"
   sleep 2
 done
 
@@ -228,7 +229,7 @@ Installation complete.
   Password file: $ENV_FILE
   Read password locally: sudo sed -n 's/^DEVBOX_PASSWORD=//p' '$ENV_FILE'
   Add an SSH public key: sudo sh -c 'cat >> "$DATA_ROOT/ssh/authorized_keys"'
-  Status: docker compose --env-file '$ENV_FILE' -f '$REPO_ROOT/stack/docker-compose.yml' ps
+  Status: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default compose --env-file '$ENV_FILE' -f '$REPO_ROOT/stack/docker-compose.yml' ps
 EOF
 
 if [[ $SSH_BIND == 127.0.0.1 ]]; then

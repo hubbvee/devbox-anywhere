@@ -4,11 +4,17 @@ When a user asks you to install Devbox Anywhere, use the supported guided workfl
 [`docs/00-agent-guided-install.md`](docs/00-agent-guided-install.md). Do not invent a new
 installer and do not pipe a remote script into a shell.
 
+Use `scripts/devbox-anywhere` for machine-readable preflight, planning, verification,
+and diagnosis. Hermes users can install the repository-backed umbrella skill from
+`skills/devbox-anywhere/`; the harness remains the enforcement boundary.
+
 ## Required behavior
 
 1. Confirm the target is a Linux server and that the user controls it.
 2. Inspect the checked-out revision and show `scripts/install-devbox --dry-run --yes`
    before making changes.
+   Run `scripts/devbox-anywhere preflight --json` and
+   `scripts/devbox-anywhere plan --json --approved-commit EXACT_SHA` first.
 3. Explain that the default ports are loopback-only. Ask separately before exposing SSH;
    never expose code-server's HTTP port directly to the public internet.
 4. Ask for approval before `sudo`, package installation, firewall changes, DNS/TLS work,
@@ -24,6 +30,8 @@ installer and do not pipe a remote script into a shell.
    file.
 8. Verify the container and helpers, then give the user the exact local command for
    reading the generated password and adding their **public** SSH key.
+   After explicit sudo approval, require
+   `sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json` to return `ok: true`.
 9. Stop and report the real error if a prerequisite or verification fails. Do not claim
    installation succeeded from command intent or partial output.
 
