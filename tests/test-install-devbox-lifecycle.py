@@ -101,11 +101,18 @@ if output is not None:
     assert real_install
     (bindir / "install").write_text(
         f'''#!/bin/sh
-out=""
-while [ $# -gt 0 ]; do
-  case "$1" in -o|-g) shift 2;; *) out="$out $(printf %q "$1")"; shift;; esac
+# Drop -o/-g (owner/group) pairs so unprivileged tests avoid chown, then exec
+# the real install with the remaining args intact. POSIX-only: no bashisms,
+# no eval, so it works whether /bin/sh is bash or dash.
+count=$#
+while [ "$count" -gt 0 ]; do
+  a=$1; shift; count=$((count - 1))
+  case "$a" in
+    -o|-g) shift; count=$((count - 1)); continue;;
+  esac
+  set -- "$@" "$a"
 done
-eval exec {real_install} $out
+exec {real_install} "$@"
 '''
     )
     # GNU stat compatibility for the Linux-only installer while tests run on macOS.
