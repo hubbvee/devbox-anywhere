@@ -7,6 +7,7 @@ lines = [line.strip() for line in (root / "tests/run.sh").read_text().splitlines
 expected = [
     "tests/test-install-devbox.sh",
     "python3 tests/test-compose-model.py",
+    "python3 tests/test-headless-browser.py",
     "python3 tests/test-install-devbox-lifecycle.py",
     "python3 tests/test-source-trust.py",
     "python3 tests/test-mutations.py",
