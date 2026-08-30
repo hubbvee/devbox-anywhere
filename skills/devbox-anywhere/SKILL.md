@@ -63,6 +63,7 @@ Load only the branch needed:
 - Coding-agent handoffs: `references/agent-handoffs.md`
 - Backups, restore, and rebuild: `references/backups-and-recovery.md`
 - Threat model and approval boundaries: `references/security-boundaries.md`
+- Browsers and authenticating to services: `references/browser-and-auth.md`
 
 ## Install this skill
 

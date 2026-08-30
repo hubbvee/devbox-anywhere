@@ -121,15 +121,18 @@ installer-bearing release.
     one private forum group, one isolated topic and tmux session per project.
 11. **[Switch coding agents mid-session](docs/11-switch-coding-agents-mid-session.md)** —
     safely hand a live worktree between Claude Code, Codex, or another CLI.
+12. **[Browsers & authenticating to services](docs/12-browser-and-auth.md)** — headless
+    testing browser, token-first auth (incl. Cloudflare), SSH-forwarded OAuth callbacks,
+    and the opt-in server GUI browser.
 
 ## Repo layout
 
 | Path | What |
 | --- | --- |
-| `docs/00–11` | Agent-guided install plus the full guide in build order |
+| `docs/00–12` | Agent-guided install plus the full guide in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
-| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, tmux wrapper, backup cron |
-| `skills/devbox-anywhere/` | Hermes umbrella skill plus six operational and security references |
+| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-browser-check`, tmux wrapper, backup cron |
+| `skills/devbox-anywhere/` | Hermes umbrella skill plus seven operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |
 | `tests/` | Installer, harness, skill, source-trust, lifecycle, and mutation checks |
