@@ -53,6 +53,19 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.3.0: browsers & authenticating to services
+
+- **Headless browser, always on** — every image bakes in a pinned Playwright + Chromium
+  (offline-ready) for tests, screenshots, scraping, and link checks. Smoke-test with
+  `devbox-browser-check`.
+- **Auth playbook** — [docs/12](docs/12-browser-and-auth.md) covers token-first auth
+  (including Cloudflare API tokens, Access **service tokens**, and tunnel tokens),
+  SSH-forwarded OAuth callbacks, and when to reach for a real browser.
+- **Opt-in interactive browser** — `install-devbox --with-browser` adds a loopback-only
+  noVNC Chromium (`127.0.0.1:8081`) for click-through logins. Off by default, generates
+  its own owner-only password, persists its profile across rebuilds, and is never exposed
+  publicly. It is a convenience, not a sandbox.
+
 ## New in v1.2.0: Hermes skill and agent harness
 
 Devbox Anywhere now includes two complementary agent-integration layers:

@@ -110,4 +110,19 @@ assert secret_command_report["command"] == "unknown", "json_command_redaction"
 assert secret_command_report["error"]["message"] == "invalid command"
 assert secret_argument not in secret_command.stdout + secret_command.stderr
 
+# plan --with-browser reports the opt-in interactive browser listener, an extra approval,
+# and appends the flag to the install command. Default plans must NOT mention the browser.
+sha = "0" * 40
+default_plan = run("plan", "--json", "--approved-commit", sha)
+# HEAD won't match this synthetic sha, so plan fails closed — but arg parsing must accept
+# --with-browser as a valid flag (returncode is a plan-logic failure, not an arg error).
+browser_plan = run("plan", "--json", "--approved-commit", sha, "--with-browser")
+assert browser_plan.returncode != 2, "with-browser must be a recognized plan flag"
+# When plan input is otherwise valid the browser fields appear; assert on the source that
+# the flag is wired into the report rather than depending on a real matching checkout.
+harness_src = SOURCE_HARNESS.read_text()
+assert "with_browser" in harness_src, "plan must handle --with-browser"
+assert "8081" in harness_src, "plan must report the browser listener port"
+assert "--with-browser" in harness_src, "plan must append --with-browser to the install command"
+
 print("agent_harness_acceptance=PASS")

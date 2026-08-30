@@ -88,6 +88,7 @@ CASES = [
     ("harness-config", "scripts/devbox-anywhere", '"DOCKER_CONFIG": DOCKER_CONFIG,', '"IGNORED_DOCKER_CONFIG": DOCKER_CONFIG,', ["python3", "tests/test-agent-harness-operations.py"], "runtime_docker_config"),
     ("json-option-reflection", "scripts/devbox-anywhere", 'safe_message = "unknown option"', "safe_message = message", ["python3", "tests/test-agent-harness.py"], "json_unknown_option_redaction"),
     ("json-command-reflection", "scripts/devbox-anywhere", 'command = next((item for item in sys.argv[1:] if item in known), "unknown")', 'command = next((item for item in sys.argv[1:] if not item.startswith("-")), "unknown")', ["python3", "tests/test-agent-harness.py"], "json_command_redaction"),
+    ("plan-browser-flag-drop", "scripts/devbox-anywhere", 'command.add_argument("--with-browser", action="store_true")', "pass", ["python3", "tests/test-agent-harness.py"], "recognized plan flag"),
     ("runner-omit-operations", "tests/run.sh", "python3 tests/test-agent-harness-operations.py\n", "", ["python3", "tests/test-runner-inventory.py"], "runner_inventory_mismatch"),
     ("runner-omit-inventory", "tests/run.sh", "python3 tests/test-runner-inventory.py\n", "", ["python3", "tests/test-mutations.py"], "runner_inventory_guard_missing"),
 ]

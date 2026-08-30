@@ -109,7 +109,13 @@ Examples of deliberate overrides:
 
 ```bash
 sudo ./scripts/install-devbox --yes --expose-ssh --approved-commit "$APPROVED_COMMIT"
+sudo ./scripts/install-devbox --yes --with-browser --approved-commit "$APPROVED_COMMIT"
 ```
+
+`--with-browser` adds the opt-in interactive GUI browser (noVNC) for auth flows. It is
+off by default, binds `127.0.0.1:8081` only, and generates its own owner-only password.
+Treat enabling it as a privileged/network change that needs explicit approval, and never
+expose port 8081 publicly. See [12 — Browsers & auth](12-browser-and-auth.md).
 
 The agent should retain the command output but redact any accidental credential material.
 It must verify the final status command printed by the installer instead of assuming a
