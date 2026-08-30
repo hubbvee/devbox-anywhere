@@ -67,7 +67,7 @@ CASES = [
     ("compose-extra-mount", "stack/docker-compose.yml", "/ssh:/home/coder/.ssh\n", "/ssh:/home/coder/.ssh\n      - /tmp:/tmp\n", ["python3", "tests/test-compose-model.py"], "volume wiring/count drifted"),
     ("compose-host-network", "stack/docker-compose.yml", "    environment:\n      # Web login password", "    network_mode: host\n    environment:\n      # Web login password", ["python3", "tests/test-compose-model.py"], "devbox service keys drifted"),
     ("compose-extra-service", "stack/docker-compose.yml", "services:\n", "services:\n  attacker:\n    image: alpine\n", ["python3", "tests/test-compose-model.py"], "service set drifted"),
-    ("browser-public-bind", "stack/docker-compose.yml", "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:8080", "0.0.0.0:8081:8080", ["python3", "tests/test-browser-service.py"], "browser noVNC must bind"),
+    ("browser-public-bind", "stack/docker-compose.yml", "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000", "0.0.0.0:8081:3000", ["python3", "tests/test-browser-service.py"], "browser noVNC must bind"),
     ("browser-literal-password", "stack/docker-compose.yml", "PASSWORD=${DEVBOX_BROWSER_PASSWORD:?set DEVBOX_BROWSER_PASSWORD in .env}", "PASSWORD=hardcoded-secret", ["python3", "tests/test-browser-service.py"], "browser password"),
     ("browser-profile-removed", "stack/docker-compose.yml", "    profiles:\n      - browser\n", "", ["python3", "tests/test-browser-service.py"], "browser service must be gated"),
     ("installer-omit-devbox", "scripts/install-devbox", "for helper in devbox devbox-relink; do", "for helper in devbox-relink; do", ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_call_count"),

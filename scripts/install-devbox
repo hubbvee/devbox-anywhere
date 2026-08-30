@@ -234,7 +234,7 @@ for helper in devbox devbox-relink; do
   "${docker_cmd[@]}" cp "$REPO_ROOT/scripts/$helper" "devbox:/tmp/$helper"
   "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
     /usr/bin/install -m 0755 "/tmp/$helper" "/home/coder/.local/bin/$helper"
-  "${docker_cmd[@]}" exec --env PATH=/usr/sbin:/usr/bin:/sbin:/bin devbox /usr/bin/rm -f "/tmp/$helper"
+  "${docker_cmd[@]}" exec --user root --env PATH=/usr/sbin:/usr/bin:/sbin:/bin devbox /usr/bin/rm -f "/tmp/$helper"
 done
 
 for attempt in $(seq 1 30); do

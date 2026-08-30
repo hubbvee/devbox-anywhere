@@ -48,7 +48,7 @@ services:
       - PUID=1000
       - PGID=1000
     ports:
-      - "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:8080" # loopback-only; never expose publicly
+      - "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000" # loopback-only; never expose publicly (KasmVNC HTTP=3000)
     volumes:
       # Persist the browser profile (cookies/sessions) so completed logins survive rebuilds.
       - ${DEVBOX_DATA_ROOT:-/data/devbox}/browser:/config

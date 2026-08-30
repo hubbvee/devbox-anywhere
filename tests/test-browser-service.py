@@ -34,9 +34,9 @@ if service_names != ["devbox", "browser"]:
 if not re.search(r'(?ms)^  browser:\s*\n(?:.*\n)*?    profiles:\s*\n      - "?browser"?\s*$', text):
     fail("browser service must be gated behind the 'browser' Compose profile")
 
-# noVNC binds loopback:8081 only; a configurable bind var defaulting to 127.0.0.1.
-if not re.search(r'(?m)^\s{6}- "\$\{DEVBOX_BROWSER_BIND:-127\.0\.0\.1\}:8081:8080"', text):
-    fail("browser noVNC must bind ${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081")
+# noVNC binds loopback:8081 (host) -> 3000 (KasmVNC HTTP in the container).
+if not re.search(r'(?m)^\s{6}- "\$\{DEVBOX_BROWSER_BIND:-127\.0\.0\.1\}:8081:3000"', text):
+    fail("browser noVNC must bind ${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000")
 
 # The VNC password comes from the env file, never a literal in the compose file.
 if not re.search(r"(?m)^\s{6}- PASSWORD=\$\{DEVBOX_BROWSER_PASSWORD:\?", text):
@@ -77,7 +77,7 @@ canonical_rendered = {
         "browser": {
             "profiles": ["browser"],
             "environment": {"PASSWORD": "TEST_ONLY_NOT_A_SECRET"},
-            "ports": [{"host_ip": "127.0.0.1", "published": "8081", "target": 8080}],
+            "ports": [{"host_ip": "127.0.0.1", "published": "8081", "target": 3000}],
             "volumes": [{"type": "bind", "source": "/data/devbox/browser", "target": "/config"}],
         }
     }

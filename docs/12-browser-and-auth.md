@@ -117,7 +117,8 @@ sudo ./scripts/install-devbox --yes --with-browser --approved-commit EXACT_SHA
 
 - A random noVNC password is generated into the owner-only environment file, exactly like
   the code-server password; it is never printed to your screen or chat. Read it locally on
-  the server the same way you read the code-server password.
+  the server the same way you read the code-server password. The KasmVNC web login uses
+  username **`abc`** with that generated password.
 - The browser profile (cookies, sessions) persists under `/data/devbox/browser`, so a
   login you complete survives container rebuilds.
 
