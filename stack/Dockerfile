@@ -117,7 +117,7 @@ RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" \
  && npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
  && npm cache clean --force \
  && rm -rf /var/lib/apt/lists/*
-COPY scripts/devbox-browser-check /usr/local/bin/devbox-browser-check
+COPY devbox-browser-check /usr/local/bin/devbox-browser-check
 RUN chmod +x /usr/local/bin/devbox-browser-check
 
 # Stage defaults; the entrypoint seeds them into persisted volumes on first boot only,

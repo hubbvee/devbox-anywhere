@@ -143,8 +143,8 @@ installer-bearing release.
 | Path | What |
 | --- | --- |
 | `docs/00–12` | Agent-guided install plus the full guide in build order |
-| `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
-| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-browser-check`, tmux wrapper, backup cron |
+| `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative, `devbox-browser-check` |
+| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, tmux wrapper, backup cron |
 | `skills/devbox-anywhere/` | Hermes umbrella skill plus seven operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |

@@ -12,7 +12,7 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCKERFILE = (ROOT / "stack/Dockerfile").read_text()
-CHECK = ROOT / "scripts/devbox-browser-check"
+CHECK = ROOT / "stack/devbox-browser-check"
 
 
 def fail(message: str) -> None:
@@ -34,15 +34,17 @@ if "install --with-deps chromium" not in DOCKERFILE:
 if not re.search(r"(?m)^ENV PLAYWRIGHT_BROWSERS_PATH=", DOCKERFILE):
     fail("Dockerfile must export a stable PLAYWRIGHT_BROWSERS_PATH")
 
-# 4. The smoke helper is shipped and made executable in the image.
-if "COPY scripts/devbox-browser-check /usr/local/bin/devbox-browser-check" not in DOCKERFILE:
-    fail("Dockerfile must install the devbox-browser-check helper")
+# 4. The smoke helper is shipped and made executable in the image. It lives under stack/
+#    (the Docker build context) so the COPY can reach it, unlike scripts/ runtime helpers
+#    which are docker-cp'd in after build.
+if "COPY devbox-browser-check /usr/local/bin/devbox-browser-check" not in DOCKERFILE:
+    fail("Dockerfile must install the devbox-browser-check helper from the build context")
 if "chmod +x /usr/local/bin/devbox-browser-check" not in DOCKERFILE:
     fail("Dockerfile must make devbox-browser-check executable")
 
 # 5. The helper exists, is a POSIX-sh script, launches headless Chromium, and fails loud.
 if not CHECK.is_file():
-    fail("scripts/devbox-browser-check must exist")
+    fail("stack/devbox-browser-check must exist")
 check_text = CHECK.read_text()
 if not check_text.startswith("#!/usr/bin/env node") and not check_text.startswith("#!/usr/bin/env bash") and not check_text.startswith("#!/bin/sh"):
     fail("devbox-browser-check must have a supported shebang")
