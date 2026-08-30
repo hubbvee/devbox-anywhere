@@ -1,0 +1,25 @@
+#!/bin/sh
+# devbox-browser-check — headless-browser smoke test.
+# Launches the baked, pinned Chromium via Playwright, loads about:blank, prints the
+# browser version, and exits non-zero on any failure. Read-only; makes no network calls.
+#
+# Playwright is installed in a fixed module dir at image build time; point NODE_PATH there
+# so require() resolves regardless of the caller's cwd or user (SSH sessions included).
+set -e
+
+: "${DEVBOX_BROWSER_HOME:=/opt/devbox-browser}"
+export NODE_PATH="$DEVBOX_BROWSER_HOME/node_modules"
+
+node -e '
+const { chromium } = require("playwright");
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto("about:blank");
+    process.stdout.write("headless chromium OK: " + browser.version() + "\n");
+  } finally {
+    await browser.close();
+  }
+})().catch((err) => { console.error("headless chromium FAILED:", err.message); process.exit(1); });
+'

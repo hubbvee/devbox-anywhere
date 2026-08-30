@@ -53,6 +53,19 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.3.0: browsers & authenticating to services
+
+- **Headless browser, always on** — every image bakes in a pinned Playwright + Chromium
+  (offline-ready) for tests, screenshots, scraping, and link checks. Smoke-test with
+  `devbox-browser-check`.
+- **Auth playbook** — [docs/12](docs/12-browser-and-auth.md) covers token-first auth
+  (including Cloudflare API tokens, Access **service tokens**, and tunnel tokens),
+  SSH-forwarded OAuth callbacks, and when to reach for a real browser.
+- **Opt-in interactive browser** — `install-devbox --with-browser` adds a loopback-only
+  noVNC Chromium (`127.0.0.1:8081`) for click-through logins. Off by default, generates
+  its own owner-only password, persists its profile across rebuilds, and is never exposed
+  publicly. It is a convenience, not a sandbox.
+
 ## New in v1.2.0: Hermes skill and agent harness
 
 Devbox Anywhere now includes two complementary agent-integration layers:
@@ -121,15 +134,18 @@ installer-bearing release.
     one private forum group, one isolated topic and tmux session per project.
 11. **[Switch coding agents mid-session](docs/11-switch-coding-agents-mid-session.md)** —
     safely hand a live worktree between Claude Code, Codex, or another CLI.
+12. **[Browsers & authenticating to services](docs/12-browser-and-auth.md)** — headless
+    testing browser, token-first auth (incl. Cloudflare), SSH-forwarded OAuth callbacks,
+    and the opt-in server GUI browser.
 
 ## Repo layout
 
 | Path | What |
 | --- | --- |
-| `docs/00–11` | Agent-guided install plus the full guide in build order |
-| `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative |
+| `docs/00–12` | Agent-guided install plus the full guide in build order |
+| `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative, `devbox-browser-check` |
 | `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, tmux wrapper, backup cron |
-| `skills/devbox-anywhere/` | Hermes umbrella skill plus six operational and security references |
+| `skills/devbox-anywhere/` | Hermes umbrella skill plus seven operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |
 | `tests/` | Installer, harness, skill, source-trust, lifecycle, and mutation checks |

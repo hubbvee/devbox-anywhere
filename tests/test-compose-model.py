@@ -26,9 +26,13 @@ top_keys = [m.group(1) for line in structural if (m := re.match(r"^([A-Za-z][\w-
 if top_keys != ["services"]:
     fail(f"top-level Compose keys drifted: {top_keys}")
 service_names = [m.group(1) for line in structural if (m := re.match(r"^  ([A-Za-z][\w-]*):\s*$", line))]
-if service_names != ["devbox"]:
+if service_names != ["devbox", "browser"]:
     fail(f"service set drifted: {service_names}")
-service_keys = [m.group(1) for line in structural if (m := re.match(r"^    ([A-Za-z][\w-]*):", line))]
+# Enforce the devbox service's exact key set. Slice to just the devbox block so the
+# optional profiled browser service does not bleed into this check.
+devbox_block = text.split("\n  browser:", 1)[0]
+devbox_structural = [line for line in devbox_block.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+service_keys = [m.group(1) for line in devbox_structural if (m := re.match(r"^    ([A-Za-z][\w-]*):", line))]
 if service_keys != ["build", "container_name", "restart", "environment", "ports", "volumes"]:
     fail(f"devbox service keys drifted: {service_keys}")
 
@@ -44,14 +48,14 @@ required_once = {
     r'(?m)^\s{6}- "\$\{DEVBOX_SSH_BIND:-127\.0\.0\.1\}:2222:22"': "SSH port",
 }
 for pattern, label in required_once.items():
-    if len(re.findall(pattern, text)) != 1:
+    if len(re.findall(pattern, devbox_block)) != 1:
         fail(f"{label} wiring drifted")
 
 
 def list_items(section: str) -> list[str]:
     match = re.search(
-        rf"(?ms)^\s{{4}}{re.escape(section)}:\s*\n(?P<body>.*?)(?=^\s{{4}}[A-Za-z][^\n]*:\s*(?:#.*)?$|\Z)",
-        text,
+        rf"(?ms)^\s{{4}}{re.escape(section)}:\s*\n(?P<body>.*?)(?=^\s{{4}}[A-Za-z][^\n]*:\s*(?:#.*)?$|^\s{{2}}[A-Za-z][^\n]*:\s*$|\Z)",
+        devbox_block,
     )
     if not match:
         fail(f"missing {section} section")

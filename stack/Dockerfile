@@ -106,6 +106,27 @@ RUN git config --system user.name  "Your Name" \
  && git config --system user.email "you@example.com" \
  && git config --system init.defaultBranch main
 
+# Headless browser capability (always on): a pinned Playwright + Chromium with its OS
+# dependencies, baked into the image so tests, screenshots, scraping, and link checks
+# work offline with no first-run download. Interactive/GUI browsing for auth flows is a
+# separate opt-in service (see docs/12 and the --with-browser installer flag).
+# Browsers are stored at a fixed image path so the smoke helper and agents can find them.
+# Playwright is installed into a FIXED module dir (not `npm i -g`) because Node's
+# require() does not search npm's global root; the helper points NODE_PATH here. This is
+# also robust for SSH sessions, which do not inherit container ENV.
+ARG PLAYWRIGHT_VERSION=1.62.1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/devbox-browsers
+ENV DEVBOX_BROWSER_HOME=/opt/devbox-browser
+RUN mkdir -p "$DEVBOX_BROWSER_HOME" \
+ && cd "$DEVBOX_BROWSER_HOME" \
+ && npm init -y >/dev/null 2>&1 \
+ && npm install "playwright@${PLAYWRIGHT_VERSION}" \
+ && "$DEVBOX_BROWSER_HOME/node_modules/.bin/playwright" install --with-deps chromium \
+ && npm cache clean --force \
+ && rm -rf /var/lib/apt/lists/*
+COPY devbox-browser-check /usr/local/bin/devbox-browser-check
+RUN chmod +x /usr/local/bin/devbox-browser-check
+
 # Stage defaults; the entrypoint seeds them into persisted volumes on first boot only,
 # so your later edits are never overwritten.
 COPY config/settings.json /etc/devbox-defaults/settings.json

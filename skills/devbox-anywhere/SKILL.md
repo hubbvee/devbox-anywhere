@@ -34,7 +34,7 @@ Do not use this for unrelated Docker hosts or generic VPS administration.
 
 1. **Resolve release truth.** Select a stable release that contains `./scripts/devbox-anywhere`, `./scripts/install-devbox`, this skill, and its references. Resolve and display its exact commit. Never substitute a branch tip.
 2. **Inspect without mutation.** Run `./scripts/devbox-anywhere preflight --json`. Treat `ok: false` and malformed JSON as a stop, not an invitation to improvise.
-3. **Build the plan.** Run `./scripts/devbox-anywhere plan --json --approved-commit EXACT_SHA`. Add `--expose-ssh` only after the user explicitly chooses public SSH and understands firewall preparation.
+3. **Build the plan.** Run `./scripts/devbox-anywhere plan --json --approved-commit EXACT_SHA`. Add `--expose-ssh` only after the user explicitly chooses public SSH and understands firewall preparation. Add `--with-browser` only after the user explicitly opts into the interactive GUI browser (loopback noVNC on 8081); both flags are privileged/network changes requiring separate approval.
 4. **Ask for explicit approval.** Show the exact commit, source location, persistent paths, listeners, approvals, and installer command. Approval is required before sudo, packages, firewall, public exposure, DNS/TLS, or container build/start.
 5. **Install only pinned bytes.** Create the clean root-owned checkout at `/opt/devbox-anywhere` using the approved stable release. Run the repository installer exactly as planned. Do not install from an agent-writable checkout.
 6. **Verify real boundaries.** After explicit sudo approval, run `sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json`. Root is required to read the owner-only installer state. Completion requires every reported check to pass.
@@ -63,6 +63,7 @@ Load only the branch needed:
 - Coding-agent handoffs: `references/agent-handoffs.md`
 - Backups, restore, and rebuild: `references/backups-and-recovery.md`
 - Threat model and approval boundaries: `references/security-boundaries.md`
+- Browsers and authenticating to services: `references/browser-and-auth.md`
 
 ## Install this skill
 

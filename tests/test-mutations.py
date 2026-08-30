@@ -62,13 +62,17 @@ def mutated(
 
 
 CASES = [
-    ("compose-extra-port", "stack/docker-compose.yml", "    volumes:\n", '      - "0.0.0.0:9999:8080"\n    volumes:\n', ["python3", "tests/test-compose-model.py"], "ports must contain exactly"),
-    ("compose-password-override", "stack/docker-compose.yml", "    ports:\n", '      - "PASSWORD=unsafe-override"\n    ports:\n', ["python3", "tests/test-compose-model.py"], "environment must contain exactly"),
-    ("compose-extra-mount", "stack/docker-compose.yml", "    volumes:\n", "    volumes:\n      - /tmp:/tmp\n", ["python3", "tests/test-compose-model.py"], "volume wiring/count drifted"),
-    ("compose-host-network", "stack/docker-compose.yml", "    environment:\n", "    network_mode: host\n    environment:\n", ["python3", "tests/test-compose-model.py"], "devbox service keys drifted"),
+    ("compose-extra-port", "stack/docker-compose.yml", "before public exposure\n    volumes:\n", 'before public exposure\n      - "0.0.0.0:9999:8080"\n    volumes:\n', ["python3", "tests/test-compose-model.py"], "ports must contain exactly"),
+    ("compose-password-override", "stack/docker-compose.yml", "in .env}\n    ports:\n", 'in .env}\n      - "PASSWORD=unsafe-override"\n    ports:\n', ["python3", "tests/test-compose-model.py"], "environment must contain exactly"),
+    ("compose-extra-mount", "stack/docker-compose.yml", "/ssh:/home/coder/.ssh\n", "/ssh:/home/coder/.ssh\n      - /tmp:/tmp\n", ["python3", "tests/test-compose-model.py"], "volume wiring/count drifted"),
+    ("compose-host-network", "stack/docker-compose.yml", "    environment:\n      # Web login password", "    network_mode: host\n    environment:\n      # Web login password", ["python3", "tests/test-compose-model.py"], "devbox service keys drifted"),
     ("compose-extra-service", "stack/docker-compose.yml", "services:\n", "services:\n  attacker:\n    image: alpine\n", ["python3", "tests/test-compose-model.py"], "service set drifted"),
+    ("browser-public-bind", "stack/docker-compose.yml", "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000", "0.0.0.0:8081:3000", ["python3", "tests/test-browser-service.py"], "browser noVNC must bind"),
+    ("browser-literal-password", "stack/docker-compose.yml", "PASSWORD=${DEVBOX_BROWSER_PASSWORD:?set DEVBOX_BROWSER_PASSWORD in .env}", "PASSWORD=hardcoded-secret", ["python3", "tests/test-browser-service.py"], "browser password"),
+    ("browser-profile-removed", "stack/docker-compose.yml", "    profiles:\n      - browser\n", "", ["python3", "tests/test-browser-service.py"], "browser service must be gated"),
     ("installer-omit-devbox", "scripts/install-devbox", "for helper in devbox devbox-relink; do", "for helper in devbox-relink; do", ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_call_count"),
     ("installer-omit-relink", "scripts/install-devbox", "for helper in devbox devbox-relink; do", "for helper in devbox; do", ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_call_count"),
+    ("installer-browser-profile-drop", "scripts/install-devbox", "  compose+=(--profile browser)", "  :", ["python3", "tests/test-install-devbox-lifecycle.py"], "browser_profile_missing"),
     ("installer-helper-order", "scripts/install-devbox", "for helper in devbox devbox-relink; do", "for helper in devbox-relink devbox; do", ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_order:first_install"),
     ("harness-wget-argv", "scripts/devbox-anywhere", '"/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"', '"/usr/bin/true"', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
     ("harness-ssh-argv", "scripts/devbox-anywhere", '"/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"', '"/usr/bin/true"', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
@@ -84,6 +88,7 @@ CASES = [
     ("harness-config", "scripts/devbox-anywhere", '"DOCKER_CONFIG": DOCKER_CONFIG,', '"IGNORED_DOCKER_CONFIG": DOCKER_CONFIG,', ["python3", "tests/test-agent-harness-operations.py"], "runtime_docker_config"),
     ("json-option-reflection", "scripts/devbox-anywhere", 'safe_message = "unknown option"', "safe_message = message", ["python3", "tests/test-agent-harness.py"], "json_unknown_option_redaction"),
     ("json-command-reflection", "scripts/devbox-anywhere", 'command = next((item for item in sys.argv[1:] if item in known), "unknown")', 'command = next((item for item in sys.argv[1:] if not item.startswith("-")), "unknown")', ["python3", "tests/test-agent-harness.py"], "json_command_redaction"),
+    ("plan-browser-flag-drop", "scripts/devbox-anywhere", 'command.add_argument("--with-browser", action="store_true")', "pass", ["python3", "tests/test-agent-harness.py"], "recognized plan flag"),
     ("runner-omit-operations", "tests/run.sh", "python3 tests/test-agent-harness-operations.py\n", "", ["python3", "tests/test-runner-inventory.py"], "runner_inventory_mismatch"),
     ("runner-omit-inventory", "tests/run.sh", "python3 tests/test-runner-inventory.py\n", "", ["python3", "tests/test-mutations.py"], "runner_inventory_guard_missing"),
 ]
