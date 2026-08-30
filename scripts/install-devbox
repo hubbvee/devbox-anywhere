@@ -60,7 +60,7 @@ Devbox Anywhere installation plan
   persistent data: $DATA_ROOT
   browser: $WEB_BIND:8080 (HTTP; put authenticated HTTPS in front)
   SSH: $SSH_BIND:2222 (key-only; no key is added automatically)
-  browser (optional GUI): $([[ $WITH_BROWSER == 1 ]] && printf '%s' "$WEB_BIND:8081 noVNC (enabled)" || printf 'disabled')
+  GUI browser (optional): $([[ $WITH_BROWSER == 1 ]] && printf '%s' "$WEB_BIND:8081 noVNC (enabled)" || printf 'disabled')
   credentials: $ENV_FILE (owner-only; value not printed)
   action: build and start stack/docker-compose.yml, then verify it
 EOF
@@ -81,6 +81,14 @@ port: $WEB_BIND:8080:8080
 port: $SSH_BIND:2222:22
 volume: $DATA_ROOT/project:/home/coder/project
 EOF
+  if ((WITH_BROWSER)); then
+    cat <<EOF
+DEVBOX_BROWSER_BIND=$WEB_BIND
+DEVBOX_BROWSER_PASSWORD=<generated-or-preserved>
+port: $WEB_BIND:8081:8080
+volume: $DATA_ROOT/browser:/config
+EOF
+  fi
   if ((!ASSUME_YES)) && [[ ! -t 0 ]]; then
     die "noninteractive installation requires --yes"
   fi
