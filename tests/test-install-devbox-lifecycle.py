@@ -70,11 +70,14 @@ with pathlib.Path({str(log)!r}).open("a") as stream:
     stream.write(json.dumps(record, sort_keys=True) + "\\n")
 prefix = ["--context", "default"]
 compose = prefix + ["compose", "--env-file", {str(env_file)!r}, "-f", {str(compose_file)!r}]
+compose_browser = compose + ["--profile", "browser"]
 known = {{
     tuple(prefix + ["compose", "version"]): ("compose-version-fail", 31, None),
     tuple(prefix + ["info"]): ("daemon-fail", 32, None),
     tuple(compose + ["build", "--pull=false"]): ("build-fail", 41, None),
     tuple(compose + ["up", "-d"]): ("up-fail", 42, None),
+    tuple(compose_browser + ["build", "--pull=false"]): ("build-fail", 41, None),
+    tuple(compose_browser + ["up", "-d"]): ("up-fail", 42, None),
     tuple(prefix + ["cp", {str(fixture / 'scripts/devbox')!r}, "devbox:/tmp/devbox"]): ("helper-devbox-fail", 43, None),
     tuple(prefix + ["cp", {str(fixture / 'scripts/devbox-relink')!r}, "devbox:/tmp/devbox-relink"]): ("helper-relink-fail", 44, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/install", "-m", "0755", "/tmp/devbox", "/home/coder/.local/bin/devbox"]): ("install-devbox-fail", 45, None),
@@ -144,10 +147,11 @@ esac
     return installer, env, log, data, approved
 
 
-def run(mode: str) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, pathlib.Path]:
+def run(mode: str, extra_args: list[str] | None = None) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, pathlib.Path]:
     installer, env, log, data, approved = prepare(mode)
     result = subprocess.run(
-        ["bash", str(installer), "--yes", "--approved-commit", approved], env=env, capture_output=True, text=True
+        ["bash", str(installer), "--yes", "--approved-commit", approved, *(extra_args or [])],
+        env=env, capture_output=True, text=True
     )
     return result, log, data
 
@@ -216,5 +220,36 @@ for mode in (
     if mode in {"readiness-fail", "inspect-fail", "http-fail", "ssh-fail"}:
         assert "DOCKER_CONFIG=/nonexistent/devbox-anywhere-docker-config" in result.stderr, "recovery_docker_config"
         assert "docker --context default logs devbox" in result.stderr, "recovery_docker_context"
+
+# --with-browser: opt-in interactive browser profile. Default runs above must never have
+# selected it; this run must add exactly the browser profile and generate an owner-only
+# noVNC password without leaking it.
+b_installer, b_env, b_log, b_data, b_approved = prepare("success")
+b_result = subprocess.run(
+    ["bash", str(b_installer), "--yes", "--approved-commit", b_approved, "--with-browser"],
+    env=b_env, capture_output=True, text=True,
+)
+assert b_result.returncode == 0, "browser_install: " + b_result.stderr
+assert "Installation complete" in b_result.stdout
+b_records = [json.loads(line) for line in b_log.read_text().splitlines()]
+# Every compose build/up call in the browser install must carry the profile flag.
+compose_calls = [r["args"] for r in b_records if "compose" in r["args"] and ("build" in r["args"] or "up" in r["args"])]
+assert compose_calls, "browser_no_compose_calls"
+for call in compose_calls:
+    assert "--profile" in call and call[call.index("--profile") + 1] == "browser", "browser_profile_missing"
+# The generated noVNC password exists, is owner-only, and never appears in output.
+b_env_file = b_data / "install/compose.env"
+b_text = b_env_file.read_text()
+assert stat.S_IMODE(b_env_file.stat().st_mode) == 0o600, "browser_env_mode"
+assert "DEVBOX_BROWSER_PASSWORD=" in b_text, "browser_password_absent"
+assert "DEVBOX_BROWSER_BIND=127.0.0.1" in b_text, "browser_bind_not_loopback"
+assert "TEST_GENERATED_PASSWORD" not in b_result.stdout + b_result.stderr, "browser_password_leak"
+# The persistent browser profile dir was created.
+assert (b_data / "browser").is_dir(), "browser_data_dir_missing"
+
+# Default installs must NOT enable the profile (proves the flag actually gates it).
+default_records = [json.loads(line) for line in log.read_text().splitlines()]
+for r in default_records:
+    assert "--profile" not in r["args"], "default_install_leaked_browser_profile"
 
 print("install_devbox_lifecycle=PASS")

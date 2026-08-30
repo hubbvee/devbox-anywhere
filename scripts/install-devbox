@@ -9,6 +9,7 @@ WEB_BIND=127.0.0.1
 SSH_BIND=127.0.0.1
 ASSUME_YES=0
 DRY_RUN=0
+WITH_BROWSER=0
 APPROVED_COMMIT=
 
 usage() {
@@ -22,6 +23,7 @@ Options:
   --yes                 accept the displayed plan (required without a TTY)
   --dry-run             print the resolved plan without changing anything
   --expose-ssh          bind SSH to 0.0.0.0 instead of loopback; firewall first
+  --with-browser        also run the opt-in interactive GUI browser (loopback noVNC)
   --approved-commit SHA exact reviewed commit authorized by the user
   -h, --help            show this help
 
@@ -39,6 +41,7 @@ while (($#)); do
     --dry-run) DRY_RUN=1; shift ;;
 
     --expose-ssh) SSH_BIND=0.0.0.0; shift ;;
+    --with-browser) WITH_BROWSER=1; shift ;;
     --approved-commit) need_arg "$@"; APPROVED_COMMIT=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -57,6 +60,7 @@ Devbox Anywhere installation plan
   persistent data: $DATA_ROOT
   browser: $WEB_BIND:8080 (HTTP; put authenticated HTTPS in front)
   SSH: $SSH_BIND:2222 (key-only; no key is added automatically)
+  browser (optional GUI): $([[ $WITH_BROWSER == 1 ]] && printf '%s' "$WEB_BIND:8081 noVNC (enabled)" || printf 'disabled')
   credentials: $ENV_FILE (owner-only; value not printed)
   action: build and start stack/docker-compose.yml, then verify it
 EOF
@@ -151,7 +155,9 @@ install -d -m 0750 "$DATA_ROOT"
 data_root_mode=$(stat -c %a "$DATA_ROOT")
 (( (8#$data_root_mode & 0022) == 0 )) || die "$DATA_ROOT must not be group/other writable"
 unset data_root_mode
-for path in project dot-local claude codex ssh; do
+data_dirs="project dot-local claude codex ssh"
+if ((WITH_BROWSER)); then data_dirs="$data_dirs browser"; fi
+for path in $data_dirs; do
   [[ ! -L $DATA_ROOT/$path ]] || die "$DATA_ROOT/$path must not be a symlink"
   install -d -o 1000 -g 1000 -m 0700 "$DATA_ROOT/$path"
 done
@@ -180,6 +186,7 @@ DEVBOX_PASSWORD=$password
 DEVBOX_DATA_ROOT=$DATA_ROOT
 DEVBOX_WEB_BIND=$WEB_BIND
 DEVBOX_SSH_BIND=$SSH_BIND
+DEVBOX_BROWSER_BIND=$WEB_BIND
 EOF
   unset password
 else
@@ -191,13 +198,27 @@ $password_line
 DEVBOX_DATA_ROOT=$DATA_ROOT
 DEVBOX_WEB_BIND=$WEB_BIND
 DEVBOX_SSH_BIND=$SSH_BIND
+DEVBOX_BROWSER_BIND=$WEB_BIND
 EOF
   unset password_line
+fi
+if ((WITH_BROWSER)); then
+  # Preserve an existing generated noVNC password across re-runs; generate on first enable.
+  # The value is never printed; the browser profile requires it before it will start.
+  if [[ -f $ENV_FILE ]] && browser_line=$(grep -m1 '^DEVBOX_BROWSER_PASSWORD=' "$ENV_FILE"); then
+    printf '%s\n' "$browser_line" >>"$tmp_env"
+  else
+    printf 'DEVBOX_BROWSER_PASSWORD=%s\n' "$(openssl rand -base64 36 | tr -d '\n')" >>"$tmp_env"
+  fi
+  unset browser_line
 fi
 mv -f "$tmp_env" "$ENV_FILE"
 trap - EXIT HUP INT TERM
 
 compose=("${docker_cmd[@]}" compose --env-file "$ENV_FILE" -f "$REPO_ROOT/stack/docker-compose.yml")
+if ((WITH_BROWSER)); then
+  compose+=(--profile browser)
+fi
 "${compose[@]}" build --pull=false
 "${compose[@]}" up -d
 
@@ -240,6 +261,16 @@ if [[ $SSH_BIND == 127.0.0.1 ]]; then
 EOF
 else
   printf '  Direct SSH after adding a key: ssh -p 2222 coder@SERVER_ADDRESS\n'
+fi
+
+if ((WITH_BROWSER)); then
+  cat <<EOF
+
+  Interactive browser (noVNC), loopback-only on $WEB_BIND:8081:
+    Read noVNC password locally: sudo sed -n 's/^DEVBOX_BROWSER_PASSWORD=//p' '$ENV_FILE'
+    Reach it privately: ssh -L 8081:127.0.0.1:8081 HOST_USER@SERVER_ADDRESS then open http://127.0.0.1:8081
+  Never expose port 8081 publicly. See docs/12-browser-and-auth.md.
+EOF
 fi
 
 cat <<'EOF'

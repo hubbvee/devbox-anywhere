@@ -28,3 +28,27 @@ services:
       - ${DEVBOX_DATA_ROOT:-/data/devbox}/claude:/home/coder/.claude
       - ${DEVBOX_DATA_ROOT:-/data/devbox}/codex:/home/coder/.codex
       - ${DEVBOX_DATA_ROOT:-/data/devbox}/ssh:/home/coder/.ssh
+
+  # Opt-in interactive GUI browser for auth flows (Cloudflare/GitHub SSO, one-time
+  # cookies). OFF BY DEFAULT: only started when the "browser" profile is selected, e.g.
+  # `install-devbox --with-browser`. Reach it via noVNC in your own browser, over the
+  # existing SSH tunnel or an authenticated proxy. See docs/12. Image pinned by digest.
+  browser:
+    profiles:
+      - browser
+    image: linuxserver/chromium@sha256:4c7b9086d2e5054b61c9e6b0f75efceece5befeff2bec3ff543d52e000cee21d
+    container_name: devbox-browser
+    restart: unless-stopped
+    shm_size: "1gb"
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      # noVNC web password. Generated owner-only by install-devbox; never a literal here.
+      - PASSWORD=${DEVBOX_BROWSER_PASSWORD:?set DEVBOX_BROWSER_PASSWORD in .env}
+      - PUID=1000
+      - PGID=1000
+    ports:
+      - "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:8080" # loopback-only; never expose publicly
+    volumes:
+      # Persist the browser profile (cookies/sessions) so completed logins survive rebuilds.
+      - ${DEVBOX_DATA_ROOT:-/data/devbox}/browser:/config
