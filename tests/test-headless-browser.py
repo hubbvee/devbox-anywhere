@@ -54,4 +54,15 @@ if "chromium" not in check_text:
 if "set -e" not in check_text and check_text.startswith("#!/bin/sh"):
     fail("POSIX-sh helper must use set -e to fail loud")
 
+# 6. Playwright must be require()-able: installed into a fixed module dir (not `npm i -g`,
+#    which Node's require() does not search) and the helper must point NODE_PATH there.
+if 'DEVBOX_BROWSER_HOME=' not in DOCKERFILE:
+    fail("Dockerfile must set DEVBOX_BROWSER_HOME for a fixed playwright module dir")
+if 'npm install -g "playwright' in DOCKERFILE:
+    fail("playwright must not be installed with npm -g (require() cannot resolve it)")
+if 'npm install "playwright@${PLAYWRIGHT_VERSION}"' not in DOCKERFILE:
+    fail("Dockerfile must install playwright into DEVBOX_BROWSER_HOME/node_modules")
+if "NODE_PATH" not in check_text or "DEVBOX_BROWSER_HOME" not in check_text:
+    fail("helper must export NODE_PATH from DEVBOX_BROWSER_HOME so require(playwright) resolves")
+
 print("headless_browser=PASS")
