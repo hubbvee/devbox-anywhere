@@ -85,7 +85,7 @@ EOF
     cat <<EOF
 DEVBOX_BROWSER_BIND=$WEB_BIND
 DEVBOX_BROWSER_PASSWORD=<generated-or-preserved>
-port: $WEB_BIND:8081:8080
+port: $WEB_BIND:8081:3000
 volume: $DATA_ROOT/browser:/config
 EOF
   fi
