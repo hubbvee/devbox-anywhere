@@ -6,6 +6,8 @@ Follow `docs/10-telegram-project-topics.md` as repository authority.
 
 Map one private Telegram forum topic to one project directory and one exact tmux session. The mapping improves routing and continuity. It does not contain the agent at the filesystem, process, network, credential, or account boundary.
 
+A topic drives the project's shared tmux session, and several agents can work that project in parallel — each in its own window/worktree. See `references/multi-channel-sessions.md` for addressing `project:agent`, the per-worktree one-writer turn-lock, and the no-live-TUI-mirror limit. Stream pane output with the same redaction discipline used in chat.
+
 ## Authorization
 
 - Authorize exact Telegram users with `allow_from`.

@@ -53,6 +53,22 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.4.0: multi-channel sessions with multiple agents
+
+- **One project, one session, any channel** — a project is one durable tmux session on the
+  box. A terminal over SSH, a Telegram topic, and a Slack channel all drive the **same**
+  live session, so the shell, processes, branch, and files are identical the moment you
+  switch. Channels themselves are configured in Hermes, not here; the box provides the
+  session layer and [docs/13](docs/13-multi-channel-multi-agent.md) shows the wiring.
+- **Multiple agents per project, in parallel** — `devbox-worktree add <project> <agent>`
+  gives each agent its own tmux window, git worktree, and `agent/<agent>` branch, so agents
+  never collide (one writer per checkout is preserved). `devbox-session` resolves
+  `project:agent` to its session/window/worktree/branch and fails closed on bad input.
+- **Per-worktree one-writer turn-lock** — `devbox-turn take|release|status` coordinates who
+  writes a checkout when an agent and a human (or two agents) share it. Atomic acquisition,
+  holder-only release, stale-lock reclaim. It is advisory coordination, not a sandbox — every
+  channel carries the devbox account's full terminal authority.
+
 ## New in v1.3.0: browsers & authenticating to services
 
 - **Headless browser, always on** — every image bakes in a pinned Playwright + Chromium
@@ -137,15 +153,18 @@ installer-bearing release.
 12. **[Browsers & authenticating to services](docs/12-browser-and-auth.md)** — headless
     testing browser, token-first auth (incl. Cloudflare), SSH-forwarded OAuth callbacks,
     and the opt-in server GUI browser.
+13. **[Multi-channel sessions with multiple agents](docs/13-multi-channel-multi-agent.md)** —
+    one project = one tmux session reachable from any channel; multiple agents in parallel,
+    each with its own worktree + branch and a per-worktree one-writer turn-lock.
 
 ## Repo layout
 
 | Path | What |
 | --- | --- |
-| `docs/00–12` | Agent-guided install plus the full guide in build order |
+| `docs/00–13` | Agent-guided install plus the full guide in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative, `devbox-browser-check` |
-| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, tmux wrapper, backup cron |
-| `skills/devbox-anywhere/` | Hermes umbrella skill plus seven operational and security references |
+| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-session`, `devbox-turn`, `devbox-worktree`, tmux wrapper, backup cron |
+| `skills/devbox-anywhere/` | Hermes umbrella skill plus eight operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |
 | `tests/` | Installer, harness, skill, source-trust, lifecycle, and mutation checks |
