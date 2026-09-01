@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# devbox-turn — per-worktree advisory one-writer lock.
+#
+# The devbox rule is one writer per checkout. When an agent and a human (or two agents)
+# can drive the same git worktree, this lock coordinates whose turn it is to write. It is
+# keyed on the WORKTREE PATH, because that is the real collision surface — not the tmux
+# session. Explicit take/release; an idle lock past its TTL can be reclaimed as a
+# stale-lock safety net.
+#
+# This is ADVISORY COORDINATION, NOT a security or sandbox boundary. It does not stop a
+# determined process from writing the worktree; it prevents accidental concurrent edits.
+#
+# Usage:
+#   devbox-turn take <worktree>      claim the turn (fails if held by someone else)
+#   devbox-turn release <worktree>   release your own turn (fails if you are not holder)
+#   devbox-turn status <worktree>    print free, or the current holder and age
+#
+# Holder identity: $DEVBOX_TURN_HOLDER (default: user@host). State dir:
+# $DEVBOX_TURN_STATE (default ~/.local/state/devbox/turn). Stale TTL seconds:
+# $DEVBOX_TURN_TTL (default 3600).
+set -eu
+
+STATE=${DEVBOX_TURN_STATE:-${HOME:-/tmp}/.local/state/devbox/turn}
+HOLDER=${DEVBOX_TURN_HOLDER:-$(id -un 2>/dev/null || echo user)@$(hostname 2>/dev/null || echo host)}
+TTL=${DEVBOX_TURN_TTL:-3600}
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+now() { date +%s; }
+
+# Map a worktree path to a single lock directory name. Reject empty/relative-looking junk
+# but otherwise accept any absolute path; the hash avoids slash/newline problems.
+lock_dir_for() {
+  wt=$1
+  [ -n "$wt" ] || die "worktree path required"
+  case "$wt" in
+    -*) die "invalid worktree path: $wt" ;;
+  esac
+  # sha256 of the exact path -> stable, collision-free key. Fall back if no sha tool.
+  if command -v sha256sum >/dev/null 2>&1; then
+    key=$(printf '%s' "$wt" | sha256sum | cut -d' ' -f1)
+  elif command -v shasum >/dev/null 2>&1; then
+    key=$(printf '%s' "$wt" | shasum -a 256 | cut -d' ' -f1)
+  else
+    die "no sha256 tool available"
+  fi
+  printf '%s/%s' "$STATE" "$key"
+}
+
+read_holder() { [ -f "$1/holder" ] && cat "$1/holder" || printf ''; }
+read_ts()     { [ -f "$1/ts" ] && cat "$1/ts" || printf '0'; }
+
+is_stale() {
+  ld=$1
+  ts=$(read_ts "$ld")
+  case "$ts" in ''|*[!0-9]*) return 0 ;; esac  # unparsable timestamp = stale
+  age=$(( $(now) - ts ))
+  [ "$age" -ge "$TTL" ]
+}
+
+write_lock() {
+  ld=$1
+  printf '%s' "$HOLDER" > "$ld/holder"
+  now > "$ld/ts"
+  printf '%s' "$1" > "$ld/worktree" 2>/dev/null || true
+}
+
+cmd=${1:-}
+shift 2>/dev/null || true
+wt=${1:-}
+
+mkdir -p "$STATE"
+
+case "$cmd" in
+  take)
+    ld=$(lock_dir_for "$wt")
+    # Atomic acquire: mkdir succeeds only if the lock does not already exist.
+    if mkdir "$ld" 2>/dev/null; then
+      write_lock "$ld"
+      printf 'took turn: %s (holder=%s)\n' "$wt" "$HOLDER"
+      exit 0
+    fi
+    # Lock exists. Reclaim only if the SAME holder re-takes, or the lock is stale.
+    cur=$(read_holder "$ld")
+    if [ "$cur" = "$HOLDER" ]; then
+      write_lock "$ld"
+      printf 'refreshed turn: %s (holder=%s)\n' "$wt" "$HOLDER"
+      exit 0
+    fi
+    if is_stale "$ld"; then
+      write_lock "$ld"
+      printf 'reclaimed stale turn: %s (holder=%s)\n' "$wt" "$HOLDER"
+      exit 0
+    fi
+    die "turn held by ${cur:-unknown} for $wt (use release, or wait for TTL=$TTL s)"
+    ;;
+
+  release)
+    ld=$(lock_dir_for "$wt")
+    [ -d "$ld" ] || { printf 'already free: %s\n' "$wt"; exit 0; }
+    cur=$(read_holder "$ld")
+    [ "$cur" = "$HOLDER" ] || die "turn held by ${cur:-unknown}, not $HOLDER; refusing to release"
+    rm -rf "$ld"
+    printf 'released turn: %s\n' "$wt"
+    ;;
+
+  status)
+    ld=$(lock_dir_for "$wt")
+    if [ ! -d "$ld" ]; then
+      printf 'free: %s\n' "$wt"
+      exit 0
+    fi
+    cur=$(read_holder "$ld")
+    ts=$(read_ts "$ld")
+    age=$(( $(now) - ts ))
+    if is_stale "$ld"; then
+      printf 'held (STALE, reclaimable): %s by %s, age=%ss\n' "$wt" "${cur:-unknown}" "$age"
+    else
+      printf 'held: %s by %s, age=%ss\n' "$wt" "${cur:-unknown}" "$age"
+    fi
+    ;;
+
+  -h|--help|help)
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+
+  *)
+    die "unknown command: ${cmd:-} (take|release|status)"
+    ;;
+esac
