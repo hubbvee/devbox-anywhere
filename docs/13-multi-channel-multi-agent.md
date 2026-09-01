@@ -37,6 +37,10 @@ the repository helper `tmuxctl` (see `docs/04-tmux-sessions.md` and
 
 ## Tools
 
+The installer copies these helpers into the container's `~/.local/bin` (on the persistent
+`dot-local` mount, so they survive rebuilds), and the harness `verify` confirms each is
+executable. Run them from any shell in the devbox.
+
 - `devbox-session list` — show projects, their sessions, and registered agents.
 - `devbox-session resolve <project>` — print the session name.
 - `devbox-session resolve <project> <agent>` — print `session` / `window` / `worktree` /

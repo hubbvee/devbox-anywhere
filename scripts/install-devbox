@@ -134,7 +134,7 @@ while IFS= read -r -d '' source_path; do
   (( (8#$source_mode & 0022) == 0 )) || die "source input is group/other writable: $source_path"
 done < <(find "$REPO_ROOT" -xdev -print0)
 unset source_mode source_path
-for source_path in stack/docker-compose.yml stack/Dockerfile stack/entrypoint.sh scripts/devbox scripts/devbox-relink; do
+for source_path in stack/docker-compose.yml stack/Dockerfile stack/entrypoint.sh scripts/devbox scripts/devbox-relink scripts/devbox-session scripts/devbox-turn scripts/devbox-worktree; do
   [[ -f $REPO_ROOT/$source_path && ! -L $REPO_ROOT/$source_path ]] \
     || die "required source input must be a regular non-symlink file: $source_path"
 done
@@ -230,17 +230,24 @@ fi
 "${compose[@]}" build --pull=false
 "${compose[@]}" up -d
 
-for helper in devbox devbox-relink; do
+helpers="devbox devbox-relink devbox-session devbox-turn devbox-worktree"
+for helper in $helpers; do
   "${docker_cmd[@]}" cp "$REPO_ROOT/scripts/$helper" "devbox:/tmp/$helper"
   "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
     /usr/bin/install -m 0755 "/tmp/$helper" "/home/coder/.local/bin/$helper"
   "${docker_cmd[@]}" exec --user root --env PATH=/usr/sbin:/usr/bin:/sbin:/bin devbox /usr/bin/rm -f "/tmp/$helper"
 done
 
+# Build the readiness probe from the same helper list so it always matches what we installed.
+readiness='/usr/bin/tmux -V >/dev/null'
+for helper in $helpers; do
+  readiness="$readiness && /usr/bin/test -x \"\$HOME/.local/bin/$helper\""
+done
+
 for attempt in $(seq 1 30); do
   if [[ $("${docker_cmd[@]}" inspect -f '{{.State.Running}}' devbox 2>/dev/null) == true ]] \
     && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox /bin/sh -c \
-      '/usr/bin/tmux -V >/dev/null && /usr/bin/test -x "$HOME/.local/bin/devbox" && /usr/bin/test -x "$HOME/.local/bin/devbox-relink"' 2>/dev/null \
+      "$readiness" 2>/dev/null \
     && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
       /usr/bin/wget -q --spider http://127.0.0.1:8080/ 2>/dev/null \
     && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
