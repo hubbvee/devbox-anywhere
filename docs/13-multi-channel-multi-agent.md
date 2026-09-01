@@ -63,16 +63,16 @@ colliding names.
 
 ## Worktrees and the turn-lock
 
-- Worktrees live under `/data/devbox/project/.worktrees/<agent>` — inside the persistent,
-  root-controlled data root, so they survive rebuilds like all other devbox state.
+- Worktrees live under `~/project/.worktrees/<agent>` — on the persistent project mount, so
+  they survive container rebuilds like all other devbox state.
 - The turn-lock is keyed on the **worktree path**, because the real collision surface is two
   writers in one checkout, not the shared session. Use it when an agent and a human (or two
   agents) can both write the same worktree:
 
   ```sh
-  devbox-turn take   /data/devbox/project/.worktrees/radioos-api   # claim before editing
-  devbox-turn status /data/devbox/project/.worktrees/radioos-api   # see the current holder
-  devbox-turn release /data/devbox/project/.worktrees/radioos-api  # hand it back
+  devbox-turn take   ~/project/.worktrees/radioos-api   # claim before editing
+  devbox-turn status ~/project/.worktrees/radioos-api   # see the current holder
+  devbox-turn release ~/project/.worktrees/radioos-api  # hand it back
   ```
 
   Acquisition is atomic (only one taker wins a race). A lock left idle past

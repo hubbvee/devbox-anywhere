@@ -30,8 +30,15 @@ def run(*args: str, state: pathlib.Path, holder: str | None = None, ttl: str | N
 assert TOOL.is_file(), "scripts/devbox-turn must exist"
 
 state = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-"))
-WT = "/data/devbox/project/.worktrees/radioos-api"
-WT2 = "/data/devbox/project/.worktrees/radioos-web"
+# Worktrees must be real directories; `take` refuses a path that does not exist.
+wt_root = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-wt-"))
+WT = str(wt_root / "radioos-api"); pathlib.Path(WT).mkdir()
+WT2 = str(wt_root / "radioos-web"); pathlib.Path(WT2).mkdir()
+
+# take on a nonexistent worktree must fail closed (not lock a typo'd path).
+missing = str(wt_root / "does-not-exist")
+r = run("take", missing, state=state, holder="alice")
+assert r.returncode != 0, "take on a nonexistent worktree must fail"
 
 # status on a free worktree reports free, exit 0.
 r = run("status", WT, state=state)

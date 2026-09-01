@@ -19,8 +19,10 @@
 #   devbox-worktree remove <project> <agent> [--force]  tear down (refuses dirty w/o --force)
 set -eu
 
-SESSION_HOME=${DEVBOX_SESSION_HOME:-/data/devbox/sessions}
-WT_ROOT=${DEVBOX_WORKTREE_ROOT:-/data/devbox/project/.worktrees}
+# In-container defaults land on the persistent mounts (~/.local, ~/project), where the helper
+# runs as the container user. Override any of these for tests or non-standard layouts.
+SESSION_HOME=${DEVBOX_SESSION_HOME:-${HOME:-/home/coder}/.local/state/devbox/sessions}
+WT_ROOT=${DEVBOX_WORKTREE_ROOT:-${HOME:-/home/coder}/project/.worktrees}
 REPO=${DEVBOX_WORKTREE_REPO:-$(pwd)}
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }

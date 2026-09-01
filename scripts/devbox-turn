@@ -73,6 +73,9 @@ mkdir -p "$STATE"
 
 case "$cmd" in
   take)
+    # A turn only makes sense for a real checkout. Refuse a worktree path that does not
+    # exist, so callers can't lock a typo'd or not-yet-created path (fail closed).
+    [ -d "$wt" ] || die "worktree does not exist: $wt"
     ld=$(lock_dir_for "$wt")
     # Atomic acquire: mkdir succeeds only if the lock does not already exist.
     if mkdir "$ld" 2>/dev/null; then

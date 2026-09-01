@@ -32,7 +32,7 @@ provides only the box-side layer.
 ## Conventions and boundaries
 
 - Agent ids must be `<project>-<suffix>`; worktrees under
-  `/data/devbox/project/.worktrees/<agent>` (persistent).
+  `~/project/.worktrees/<agent>` (persistent).
 - The turn-lock is keyed on the worktree path and is advisory coordination, not a security
   boundary; acquisition is atomic and idle locks past `DEVBOX_TURN_TTL` are reclaimable.
 - Chat surfaces show snapshots/streams, not a live TUI mirror.

@@ -15,7 +15,9 @@
 #   devbox-session resolve <project> <agent>  print session/window/worktree/branch
 set -eu
 
-SESSION_HOME=${DEVBOX_SESSION_HOME:-/data/devbox/sessions}
+# Registry lives under the persistent ~/.local mount (survives container rebuilds), where the
+# helper actually runs as the container user. Override with DEVBOX_SESSION_HOME.
+SESSION_HOME=${DEVBOX_SESSION_HOME:-${HOME:-/home/coder}/.local/state/devbox/sessions}
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
