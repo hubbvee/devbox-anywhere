@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# devbox-worktree — manage per-agent git worktrees + tmux windows for a project.
+#
+# Model (docs/13): project == one tmux session; each agent == one tmux window backed by its
+# own git worktree + branch, so agents work the same project in parallel without violating
+# one-writer-per-checkout. This helper creates/lists/removes those agent desks and keeps the
+# devbox-session registry in sync.
+#
+# Naming: agent ids MUST be "<project>-<suffix>". Worktrees live under
+# $DEVBOX_WORKTREE_ROOT/<agent> (default /data/devbox/project/.worktrees). Branch is
+# agent/<agent>. Registry is $DEVBOX_SESSION_HOME/<project>.tsv.
+#
+# tmux window creation is skipped when DEVBOX_WORKTREE_NO_TMUX=1 (or tmux is absent), so the
+# git + registry work is testable without a live server.
+#
+# Usage:
+#   devbox-worktree add <project> <agent>            create worktree+branch+window, register
+#   devbox-worktree list                             show projects and their agents
+#   devbox-worktree remove <project> <agent> [--force]  tear down (refuses dirty w/o --force)
+set -eu
+
+SESSION_HOME=${DEVBOX_SESSION_HOME:-/data/devbox/sessions}
+WT_ROOT=${DEVBOX_WORKTREE_ROOT:-/data/devbox/project/.worktrees}
+REPO=${DEVBOX_WORKTREE_REPO:-$(pwd)}
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+safe_name() {
+  case "$1" in
+    ""|.|..) return 1 ;;
+    */*|*'\'*) return 1 ;;
+    -*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+require_convention() {
+  # $1=project $2=agent — agent must be <project>-<suffix>
+  case "$2" in
+    "$1"-?*) : ;;
+    *) die "agent id must be '${1}-<suffix>': $2" ;;
+  esac
+}
+
+registry_file() {
+  safe_name "$1" || die "invalid project name: $1"
+  mkdir -p "$SESSION_HOME"
+  printf '%s/%s.tsv' "$SESSION_HOME" "$1"
+}
+
+agent_registered() {
+  # $1=registry file $2=agent
+  [ -f "$1" ] || return 1
+  cut -f1 "$1" | grep -qxF "$2"
+}
+
+tmux_enabled() {
+  [ "${DEVBOX_WORKTREE_NO_TMUX:-0}" = "1" ] && return 1
+  command -v tmux >/dev/null 2>&1
+}
+
+cmd=${1:-list}
+shift 2>/dev/null || true
+
+case "$cmd" in
+  add)
+    project=${1:-}; agent=${2:-}
+    [ -n "$project" ] && [ -n "$agent" ] || die "usage: devbox-worktree add <project> <agent>"
+    safe_name "$project" || die "invalid project name: $project"
+    safe_name "$agent" || die "invalid agent name: $agent"
+    require_convention "$project" "$agent"
+
+    reg=$(registry_file "$project")
+    agent_registered "$reg" "$agent" && die "agent already exists: $agent"
+
+    worktree="$WT_ROOT/$agent"
+    branch="agent/$agent"
+    [ -e "$worktree" ] && die "worktree path already exists: $worktree"
+
+    mkdir -p "$WT_ROOT"
+
+    # Create the git worktree + branch. If anything downstream fails, roll it back so we
+    # never leave a half-registered agent.
+    git -C "$REPO" worktree add -b "$branch" "$worktree" >/dev/null 2>&1 \
+      || die "git worktree add failed for $agent (branch $branch)"
+
+    rollback() {
+      git -C "$REPO" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+      git -C "$REPO" branch -D "$branch" >/dev/null 2>&1 || true
+    }
+
+    # Optionally open a tmux window in the project session at the worktree.
+    if tmux_enabled; then
+      tmux has-session -t "=$project" 2>/dev/null || tmux new-session -d -s "$project" -c "$worktree" \
+        || { rollback; die "could not create tmux session $project"; }
+      tmux new-window -t "=$project" -n "$agent" -c "$worktree" \
+        || { rollback; die "could not create tmux window $agent"; }
+    fi
+
+    # Register atomically: append via a temp file + mv.
+    row=$(printf '%s\t%s\t%s' "$agent" "$worktree" "$branch")
+    tmp=$(mktemp "${reg}.XXXXXX") || { rollback; die "cannot stage registry write"; }
+    { [ -f "$reg" ] && cat "$reg"; printf '%s\n' "$row"; } > "$tmp" || { rm -f "$tmp"; rollback; die "registry write failed"; }
+    mv "$tmp" "$reg" || { rm -f "$tmp"; rollback; die "registry commit failed"; }
+
+    printf 'added agent %s: worktree=%s branch=%s\n' "$agent" "$worktree" "$branch"
+    ;;
+
+  list)
+    [ -d "$SESSION_HOME" ] || { echo "no agents"; exit 0; }
+    found=0
+    for reg in "$SESSION_HOME"/*.tsv; do
+      [ -e "$reg" ] || continue
+      found=1
+      project=$(basename "$reg" .tsv)
+      printf 'project=%s session=%s\n' "$project" "$project"
+      while IFS=$(printf '\t') read -r agent worktree branch rest; do
+        [ -n "${agent:-}" ] || continue
+        printf '  agent=%s worktree=%s branch=%s\n' "$agent" "$worktree" "$branch"
+      done < "$reg"
+    done
+    [ "$found" = 1 ] || echo "no agents"
+    ;;
+
+  remove)
+    project=${1:-}; agent=${2:-}; force=0
+    for a in "$@"; do [ "$a" = "--force" ] && force=1; done
+    [ -n "$project" ] && [ -n "$agent" ] || die "usage: devbox-worktree remove <project> <agent> [--force]"
+    safe_name "$project" || die "invalid project name: $project"
+    safe_name "$agent" || die "invalid agent name: $agent"
+
+    reg=$(registry_file "$project")
+    agent_registered "$reg" "$agent" || die "unknown agent: $agent"
+
+    # Look up the worktree/branch for this agent from the registry.
+    worktree=; branch=
+    while IFS=$(printf '\t') read -r r_agent r_worktree r_branch r_rest; do
+      if [ "$r_agent" = "$agent" ]; then worktree=$r_worktree; branch=$r_branch; fi
+    done < "$reg"
+    [ -n "$worktree" ] && [ -n "$branch" ] || die "malformed registry row for $agent"
+
+    # Refuse to drop a worktree with uncommitted changes unless forced.
+    if [ "$force" != 1 ] && [ -d "$worktree" ]; then
+      if [ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ]; then
+        die "worktree has uncommitted changes: $worktree (use --force to discard)"
+      fi
+    fi
+
+    # Tear down tmux window (best effort), git worktree, then branch.
+    if tmux_enabled; then
+      tmux kill-window -t "=$project:$agent" 2>/dev/null || true
+    fi
+    git -C "$REPO" worktree remove ${force:+--force} "$worktree" >/dev/null 2>&1 \
+      || { [ "$force" = 1 ] && rm -rf "$worktree"; git -C "$REPO" worktree prune >/dev/null 2>&1 || true; }
+    git -C "$REPO" branch -D "$branch" >/dev/null 2>&1 || true
+
+    # Drop the registry row atomically (exact first-field match, no regex needed).
+    tmp=$(mktemp "${reg}.XXXXXX") || die "cannot stage registry write"
+    awk -F '\t' -v a="$agent" '$1 != a' "$reg" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$reg" || { rm -f "$tmp"; die "registry commit failed"; }
+
+    printf 'removed agent %s\n' "$agent"
+    ;;
+
+  -h|--help|help)
+    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+
+  *)
+    die "unknown command: $cmd (add|list|remove)"
+    ;;
+esac

@@ -14,5 +14,6 @@ python3 tests/test-agent-harness-operations.py
 python3 tests/test-hermes-skill.py
 python3 tests/test-session-registry.py
 python3 tests/test-turn-lock.py
+python3 tests/test-worktree-helper.py
 python3 tests/test-runner-inventory.py
 printf 'tests=PASS\n'

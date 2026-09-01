@@ -93,6 +93,8 @@ CASES = [
     ("session-dupe-accept", "scripts/devbox-session", '[ "$matches" -eq 1 ] || {', '[ "$matches" -ge 1 ] || {', ["python3", "tests/test-session-registry.py"], "duplicate agent must fail closed"),
     ("turn-take-steal", "scripts/devbox-turn", 'die "turn held by ${cur:-unknown} for $wt (use release, or wait for TTL=$TTL s)"', 'write_lock "$ld"', ["python3", "tests/test-turn-lock.py"], "second take must fail closed"),
     ("turn-foreign-release", "scripts/devbox-turn", '[ "$cur" = "$HOLDER" ] || die "turn held by ${cur:-unknown}, not $HOLDER; refusing to release"', 'true', ["python3", "tests/test-turn-lock.py"], "non-holder release must fail"),
+    ("worktree-dirty-remove", "scripts/devbox-worktree", 'die "worktree has uncommitted changes: $worktree (use --force to discard)"', 'true', ["python3", "tests/test-worktree-helper.py"], "dirty worktree must not be removed without --force"),
+    ("worktree-convention-drop", "scripts/devbox-worktree", 'die "agent id must be \'${1}-<suffix>\': $2"', 'true', ["python3", "tests/test-worktree-helper.py"], "off-convention agent must be rejected"),
     ("runner-omit-operations", "tests/run.sh", "python3 tests/test-agent-harness-operations.py\n", "", ["python3", "tests/test-runner-inventory.py"], "runner_inventory_mismatch"),
     ("runner-omit-inventory", "tests/run.sh", "python3 tests/test-runner-inventory.py\n", "", ["python3", "tests/test-mutations.py"], "runner_inventory_guard_missing"),
 ]
