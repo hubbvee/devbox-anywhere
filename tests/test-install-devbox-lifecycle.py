@@ -174,7 +174,13 @@ assert "TEST_GENERATED_PASSWORD" not in success.stdout + success.stderr
 env_file = data / "install/compose.env"
 assert env_file.exists()
 assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
-password_line = env_file.read_text().splitlines()[0]
+default_env_text = env_file.read_text()
+# Even the DEFAULT (no --with-browser) install must define DEVBOX_BROWSER_PASSWORD: modern
+# Compose interpolates ${VAR:?} for every service in the file, including profile-gated ones
+# that are not selected, so a missing value breaks `compose build` on the default path.
+assert "DEVBOX_BROWSER_PASSWORD=" in default_env_text, "default_install_missing_browser_password"
+assert "TEST_GENERATED_PASSWORD" not in success.stdout + success.stderr, "browser_password_leak_default"
+password_line = default_env_text.splitlines()[0]
 
 # Rerun the same fixture to prove password preservation.
 installer = data.parents[1] / "repo/scripts/install-devbox"
@@ -262,6 +268,7 @@ b_env_file = b_data / "install/compose.env"
 b_text = b_env_file.read_text()
 assert stat.S_IMODE(b_env_file.stat().st_mode) == 0o600, "browser_env_mode"
 assert "DEVBOX_BROWSER_PASSWORD=" in b_text, "browser_password_absent"
+assert b_text.count("DEVBOX_BROWSER_PASSWORD=") == 1, "browser_password_duplicated"
 assert "DEVBOX_BROWSER_BIND=127.0.0.1" in b_text, "browser_bind_not_loopback"
 assert "TEST_GENERATED_PASSWORD" not in b_result.stdout + b_result.stderr, "browser_password_leak"
 # The persistent browser profile dir was created.

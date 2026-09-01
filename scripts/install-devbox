@@ -187,6 +187,17 @@ fi
 tmp_env=$(mktemp "$STATE_DIR/compose.env.XXXXXX")
 chmod 0600 "$tmp_env"
 trap 'rm -f "$tmp_env"' EXIT
+# Resolve the noVNC password unconditionally. Modern Docker Compose interpolates ${VAR:?}
+# for EVERY service in the file, including profile-gated services that are not selected, so
+# the default (no-browser) install must still define DEVBOX_BROWSER_PASSWORD or `compose
+# build` fails. The value is owner-only and never printed; it is only consumed when the
+# browser profile is actually started. Preserve an existing value across re-runs.
+if [[ -f $ENV_FILE ]] && existing_browser_pw=$(grep -m1 '^DEVBOX_BROWSER_PASSWORD=' "$ENV_FILE"); then
+  browser_pw_line=$existing_browser_pw
+else
+  browser_pw_line="DEVBOX_BROWSER_PASSWORD=$(openssl rand -base64 36 | tr -d '\n')"
+fi
+unset existing_browser_pw
 if [[ ! -f $ENV_FILE ]]; then
   password=$(openssl rand -base64 36 | tr -d '\n')
   cat >"$tmp_env" <<EOF
@@ -195,6 +206,7 @@ DEVBOX_DATA_ROOT=$DATA_ROOT
 DEVBOX_WEB_BIND=$WEB_BIND
 DEVBOX_SSH_BIND=$SSH_BIND
 DEVBOX_BROWSER_BIND=$WEB_BIND
+$browser_pw_line
 EOF
   unset password
 else
@@ -207,19 +219,11 @@ DEVBOX_DATA_ROOT=$DATA_ROOT
 DEVBOX_WEB_BIND=$WEB_BIND
 DEVBOX_SSH_BIND=$SSH_BIND
 DEVBOX_BROWSER_BIND=$WEB_BIND
+$browser_pw_line
 EOF
   unset password_line
 fi
-if ((WITH_BROWSER)); then
-  # Preserve an existing generated noVNC password across re-runs; generate on first enable.
-  # The value is never printed; the browser profile requires it before it will start.
-  if [[ -f $ENV_FILE ]] && browser_line=$(grep -m1 '^DEVBOX_BROWSER_PASSWORD=' "$ENV_FILE"); then
-    printf '%s\n' "$browser_line" >>"$tmp_env"
-  else
-    printf 'DEVBOX_BROWSER_PASSWORD=%s\n' "$(openssl rand -base64 36 | tr -d '\n')" >>"$tmp_env"
-  fi
-  unset browser_line
-fi
+unset browser_pw_line
 mv -f "$tmp_env" "$ENV_FILE"
 trap - EXIT HUP INT TERM
 
