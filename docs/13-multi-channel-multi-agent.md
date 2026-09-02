@@ -89,6 +89,37 @@ devbox-session list                        # confirm both agents
 devbox-worktree remove webapp webapp-api # clean removal once merged (refuses dirty WIP)
 ```
 
+## Dependency policy
+
+A new worktree is a **fresh checkout with no installed dependencies** — `node_modules/`, a
+Python virtualenv, build caches, etc. do not exist yet. An agent dropped into a brand-new
+worktree will hit missing-dependency errors until they are installed.
+
+**Install dependencies per worktree.** Each agent's worktree is an independent working tree;
+run the project's install step inside it before (or as part of) starting work:
+
+```sh
+cd ~/project/.worktrees/webapp-api && npm ci        # or: uv sync, pip install -e ., etc.
+```
+
+Automate it with the post-add hook — `DEVBOX_WORKTREE_POSTADD` runs in the new worktree
+right after the agent is created:
+
+```sh
+DEVBOX_WORKTREE_POSTADD='npm ci' devbox-worktree add webapp webapp-api
+```
+
+If the hook fails, `add` exits non-zero but keeps the worktree, branch, and registration, so
+you can fix the environment and re-run the install without recreating the agent.
+
+**Do not share `node_modules/` (or a venv) between worktrees** — e.g. via a symlink to a
+common directory. It reintroduces exactly the cross-checkout coupling worktrees exist to
+avoid: native modules built for one branch's dependency tree corrupt another, concurrent
+installs race, and lockfile drift becomes invisible. Each worktree owns its own dependency
+directory. If disk or install time is a concern, prefer a package manager with a global
+content-addressed store (e.g. `pnpm`, or `uv`'s cache) that stays safe across worktrees,
+rather than sharing the install directory itself.
+
 ## What this is not
 
 - **Not a live TUI mirror.** Line-oriented command/response maps cleanly to chat via

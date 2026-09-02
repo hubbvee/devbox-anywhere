@@ -33,6 +33,9 @@ provides only the box-side layer.
 
 - Agent ids must be `<project>-<suffix>`; worktrees under
   `~/project/.worktrees/<agent>` (persistent).
+- A fresh worktree has no installed dependencies: install them per worktree (or via
+  `DEVBOX_WORKTREE_POSTADD`, run in the new worktree after `add`), and never share
+  `node_modules`/venv across worktrees. See docs/13 "Dependency policy".
 - The turn-lock is keyed on the worktree path and is advisory coordination, not a security
   boundary; acquisition is atomic and idle locks past `DEVBOX_TURN_TTL` are reclaimable.
 - Chat surfaces show snapshots/streams, not a live TUI mirror.
