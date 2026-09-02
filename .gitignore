@@ -5,3 +5,6 @@ main.env
 !*.env.op
 !*.example
 .DS_Store
+
+# Local planning/scratch — never travels with the public repo (sanitization: no names/projects)
+.hermes/
