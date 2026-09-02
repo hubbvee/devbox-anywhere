@@ -7,11 +7,15 @@
 # devbox-session registry in sync.
 #
 # Naming: agent ids MUST be "<project>-<suffix>". Worktrees live under
-# $DEVBOX_WORKTREE_ROOT/<agent> (default /data/devbox/project/.worktrees). Branch is
-# agent/<agent>. Registry is $DEVBOX_SESSION_HOME/<project>.tsv.
+# $DEVBOX_WORKTREE_ROOT/<agent> (default ~/project/.worktrees, on the persistent mount).
+# Branch is agent/<agent>. Registry is $DEVBOX_SESSION_HOME/<project>.tsv.
 #
 # tmux window creation is skipped when DEVBOX_WORKTREE_NO_TMUX=1 (or tmux is absent), so the
 # git + registry work is testable without a live server.
+#
+# Dependencies: a fresh worktree has NO installed dependencies. Set DEVBOX_WORKTREE_POSTADD
+# to a command that installs them per worktree (e.g. 'npm ci', 'uv sync'); it runs in the new
+# worktree after the agent is created. See docs/13 "Dependency policy".
 #
 # Usage:
 #   devbox-worktree add <project> <agent>            create worktree+branch+window, register
@@ -107,6 +111,23 @@ case "$cmd" in
     mv "$tmp" "$reg" || { rm -f "$tmp"; rollback; die "registry commit failed"; }
 
     printf 'added agent %s: worktree=%s branch=%s\n' "$agent" "$worktree" "$branch"
+
+    # Optional post-add hook: a fresh worktree has no installed dependencies, so run a
+    # user-provided command IN the new worktree to install them (e.g. npm ci, uv sync).
+    # The agent is already fully created and registered at this point; a hook failure is
+    # surfaced as a non-zero exit but the worktree/branch/registration are kept so deps
+    # can be fixed and re-run without losing the checkout.
+    if [ -n "${DEVBOX_WORKTREE_POSTADD:-}" ]; then
+      printf 'running post-add hook in %s\n' "$worktree"
+      if ( cd "$worktree" && sh -c "$DEVBOX_WORKTREE_POSTADD" ); then
+        printf 'post-add hook succeeded for %s\n' "$agent"
+      else
+        hook_status=$?
+        printf 'ERROR: post-add hook failed (exit %s) for %s; worktree kept at %s\n' \
+          "$hook_status" "$agent" "$worktree" >&2
+        exit "$hook_status"
+      fi
+    fi
     ;;
 
   list)

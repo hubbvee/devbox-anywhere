@@ -22,7 +22,7 @@ def git(*args: str, cwd: pathlib.Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def run(*args: str, repo: pathlib.Path, home: pathlib.Path, wt_root: pathlib.Path) -> subprocess.CompletedProcess[str]:
+def run(*args: str, repo: pathlib.Path, home: pathlib.Path, wt_root: pathlib.Path, postadd: str | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ | {
         "DEVBOX_SESSION_HOME": str(home),
         "DEVBOX_WORKTREE_ROOT": str(wt_root),
@@ -31,6 +31,8 @@ def run(*args: str, repo: pathlib.Path, home: pathlib.Path, wt_root: pathlib.Pat
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
     }
+    if postadd is not None:
+        env["DEVBOX_WORKTREE_POSTADD"] = postadd
     return subprocess.run(["bash", str(TOOL), *args], env=env, capture_output=True, text=True)
 
 
@@ -104,5 +106,32 @@ assert "webapp-web\t" in (home / "webapp.tsv").read_text()
 r = run("remove", "webapp", "webapp-web", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode == 0, r.stderr
 assert not (wt_root / "webapp-web").exists()
+
+# --- DEVBOX_WORKTREE_POSTADD hook ---
+# A post-add hook runs after the agent is created, with cwd == the new worktree, so a fresh
+# worktree can install its own dependencies. Prove it runs in the right directory.
+r = run("add", "webapp", "webapp-hook", repo=repo, home=home, wt_root=wt_root,
+        postadd="pwd > .postadd_cwd; echo installed > .deps_marker")
+assert r.returncode == 0, "add with a passing post-add hook must succeed: " + r.stderr
+hook_wt = wt_root / "webapp-hook"
+assert (hook_wt / ".deps_marker").read_text().strip() == "installed", "hook must run in the worktree"
+# The hook's cwd must be the worktree itself (resolve symlinks for macOS /tmp).
+assert pathlib.Path((hook_wt / ".postadd_cwd").read_text().strip()).resolve() == hook_wt.resolve(), "hook cwd must be the worktree"
+run("remove", "webapp", "webapp-hook", "--force", repo=repo, home=home, wt_root=wt_root)
+
+# A FAILING hook is surfaced (non-zero add) but the worktree/branch/registration persist,
+# so the user can fix and re-run dependency install without losing the checkout.
+r = run("add", "webapp", "webapp-badhook", repo=repo, home=home, wt_root=wt_root,
+        postadd="exit 7")
+assert r.returncode != 0, "a failing post-add hook must be surfaced as a non-zero exit"
+assert (wt_root / "webapp-badhook" / ".git").exists(), "worktree must persist despite hook failure"
+assert "webapp-badhook\t" in (home / "webapp.tsv").read_text(), "agent must stay registered despite hook failure"
+run("remove", "webapp", "webapp-badhook", "--force", repo=repo, home=home, wt_root=wt_root)
+
+# No hook set -> add behaves exactly as before (no hook artifacts, clean success).
+r = run("add", "webapp", "webapp-nohook", repo=repo, home=home, wt_root=wt_root)
+assert r.returncode == 0, r.stderr
+assert not (wt_root / "webapp-nohook" / ".deps_marker").exists()
+run("remove", "webapp", "webapp-nohook", "--force", repo=repo, home=home, wt_root=wt_root)
 
 print("worktree_helper=PASS")
