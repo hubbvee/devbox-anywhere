@@ -53,9 +53,18 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.5.0: worktree post-add hook
+
+- **Dependencies on new worktrees, handled** — a freshly created agent worktree has no
+  installed dependencies. `DEVBOX_WORKTREE_POSTADD='npm ci' devbox-worktree add <project>
+  <agent>` runs your install step **inside the new worktree** right after it's created; a
+  hook failure surfaces as a non-zero exit but keeps the worktree so you can fix and re-run.
+  See [docs/13 "Dependency policy"](docs/13-multi-channel-multi-agent.md) — install per
+  worktree, never share `node_modules`/venv across worktrees.
+
 ## New in v1.4: multi-channel sessions with multiple agents
 
-*Current release: **v1.4.1** — a sanitization patch (neutral test fixtures; no installer, harness, or helper changes vs v1.4.0). The feature below shipped in v1.4.0.*
+*Multi-channel/multi-agent shipped in v1.4.0; v1.4.1 was a sanitization patch. The feature below is current.*
 
 - **One project, one session, any channel** — a project is one durable tmux session on the
   box. A terminal over SSH, a Telegram topic, and a Slack channel all drive the **same**
