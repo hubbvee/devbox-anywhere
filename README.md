@@ -53,7 +53,9 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
-## New in v1.4.0: multi-channel sessions with multiple agents
+## New in v1.4: multi-channel sessions with multiple agents
+
+*Current release: **v1.4.1** — a sanitization patch (neutral test fixtures; no installer, harness, or helper changes vs v1.4.0). The feature below shipped in v1.4.0.*
 
 - **One project, one session, any channel** — a project is one durable tmux session on the
   box. A terminal over SSH, a Telegram topic, and a Slack channel all drive the **same**
@@ -117,7 +119,7 @@ operations are pinned to the local `default` context with isolated configuration
 services remain loopback-only unless public SSH is explicitly requested.
 
 Starting with v1.2.0, Hermes users can install the umbrella skill from the same verified
-stable checkout used for the workflow, including all six operational references:
+stable checkout used for the workflow, including all eight operational references:
 
 ```bash
 install -d -m 0700 "$HOME/.hermes/skills/devbox-anywhere"
