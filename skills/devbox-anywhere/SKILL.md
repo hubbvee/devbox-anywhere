@@ -64,6 +64,7 @@ Load only the branch needed:
 - Backups, restore, and rebuild: `references/backups-and-recovery.md`
 - Threat model and approval boundaries: `references/security-boundaries.md`
 - Browsers and authenticating to services: `references/browser-and-auth.md`
+- Multi-channel sessions with multiple agents: `references/multi-channel-sessions.md`
 
 ## Install this skill
 

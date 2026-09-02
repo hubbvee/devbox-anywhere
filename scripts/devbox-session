@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# devbox-session — resolve a project to its tmux session and agents.
+#
+# Model (see docs/13): one project == one tmux session (session name == project name);
+# each agent is a tmux window backed by its own git worktree + branch. This tool is a
+# read-only resolver over a registry directory maintained by devbox-worktree; it needs no
+# live tmux and never invents a session, agent, or worktree.
+#
+# Registry: $DEVBOX_SESSION_HOME/<project>.tsv (default /data/devbox/sessions), one row
+# per agent: <agent-id>\t<worktree-path>\t<branch>. Agent ids must be "<project>-<suffix>".
+#
+# Usage:
+#   devbox-session list                       list projects and their agents
+#   devbox-session resolve <project>          print session=<project>
+#   devbox-session resolve <project> <agent>  print session/window/worktree/branch
+set -eu
+
+# Registry lives under the persistent ~/.local mount (survives container rebuilds), where the
+# helper actually runs as the container user. Override with DEVBOX_SESSION_HOME.
+SESSION_HOME=${DEVBOX_SESSION_HOME:-${HOME:-/home/coder}/.local/state/devbox/sessions}
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# A project/agent name must be a safe single path segment: no slashes, no dots-only,
+# no leading dash. This blocks path traversal and tmux/option confusion.
+safe_name() {
+  case "$1" in
+    ""|.|..) return 1 ;;
+    */*|*'\'*) return 1 ;;
+    -*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+registry_of() {
+  # echoes the registry file path for a validated project, or fails.
+  safe_name "$1" || die "invalid project name: $1"
+  printf '%s/%s.tsv' "$SESSION_HOME" "$1"
+}
+
+cmd=${1:-list}
+shift 2>/dev/null || true
+
+case "$cmd" in
+  list)
+    [ -d "$SESSION_HOME" ] || { echo "no sessions"; exit 0; }
+    found=0
+    for reg in "$SESSION_HOME"/*.tsv; do
+      [ -e "$reg" ] || continue
+      found=1
+      project=$(basename "$reg" .tsv)
+      printf 'project=%s session=%s\n' "$project" "$project"
+      while IFS=$(printf '\t') read -r agent worktree branch rest; do
+        [ -n "${agent:-}" ] || continue
+        printf '  agent=%s window=%s worktree=%s branch=%s\n' "$agent" "$agent" "$worktree" "$branch"
+      done < "$reg"
+    done
+    [ "$found" = 1 ] || echo "no sessions"
+    ;;
+
+  resolve)
+    project=${1:-} || true
+    [ -n "$project" ] || die "usage: devbox-session resolve <project> [agent]"
+    reg=$(registry_of "$project")
+    [ -f "$reg" ] || die "unknown project: $project"
+
+    agent=${2:-}
+    if [ -z "$agent" ]; then
+      printf 'session=%s\n' "$project"
+      exit 0
+    fi
+
+    safe_name "$agent" || die "invalid agent name: $agent"
+    # Enforce the <project>-<suffix> convention so channels address agents unambiguously.
+    case "$agent" in
+      "$project"-?*) : ;;
+      *) die "agent id must be '${project}-<suffix>': $agent" ;;
+    esac
+
+    # Look the agent up; fail closed on missing, duplicate, or malformed rows.
+    matches=0
+    m_worktree=; m_branch=
+    while IFS=$(printf '\t') read -r r_agent r_worktree r_branch r_rest; do
+      [ -n "${r_agent:-}" ] || continue
+      # A well-formed row has exactly three fields: no 4th column, non-empty worktree/branch.
+      [ -z "${r_rest:-}" ] || die "malformed registry row for $project: extra columns"
+      if [ "$r_agent" = "$agent" ]; then
+        [ -n "${r_worktree:-}" ] && [ -n "${r_branch:-}" ] || die "malformed registry row for $agent"
+        matches=$((matches + 1))
+        m_worktree=$r_worktree
+        m_branch=$r_branch
+      fi
+    done < "$reg"
+
+    [ "$matches" -eq 1 ] || {
+      [ "$matches" -eq 0 ] && die "unknown agent: $agent"
+      die "ambiguous agent (registered $matches times): $agent"
+    }
+
+    printf 'session=%s\nwindow=%s\nworktree=%s\nbranch=%s\n' "$project" "$agent" "$m_worktree" "$m_branch"
+    ;;
+
+  -h|--help|help)
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+
+  *)
+    die "unknown command: $cmd (list|resolve)"
+    ;;
+esac

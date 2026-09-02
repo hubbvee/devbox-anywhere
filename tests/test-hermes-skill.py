@@ -16,6 +16,7 @@ REFERENCES = {
     "references/backups-and-recovery.md",
     "references/security-boundaries.md",
     "references/browser-and-auth.md",
+    "references/multi-channel-sessions.md",
 }
 
 assert MAIN.is_file(), "umbrella skill is missing"

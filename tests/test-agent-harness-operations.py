@@ -74,6 +74,9 @@ elif args == ["--context", "default", "inspect", "--format", "{{{{json .Mounts}}
 elif args in [
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-relink"],
+    ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-session"],
+    ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-turn"],
+    ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-worktree"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"],
 ]:
@@ -122,8 +125,9 @@ else:
     ids = {item["id"] for item in verify_report["checks"] if item["status"] == "pass"}
     assert ids == {
         "state.file", "container.running", "helper.devbox", "helper.devbox-relink",
+        "helper.devbox-session", "helper.devbox-turn", "helper.devbox-worktree",
         "service.http", "service.ssh", "network.bindings", "storage.mounts",
-    }
+    }, "verify_check_ids"
     assert "TEST_SECRET_MUST_NOT_APPEAR" not in verified.stdout + verified.stderr
     calls = [json.loads(line) for line in docker_log.read_text().splitlines()]
     assert all(call["args"][:2] == ["--context", "default"] for call in calls)
