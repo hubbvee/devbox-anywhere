@@ -34,57 +34,57 @@ def kv(text: str) -> dict[str, str]:
 assert TOOL.is_file(), "scripts/devbox-session must exist"
 
 home = pathlib.Path(tempfile.mkdtemp(prefix="devbox-session-"))
-# radioos project: two agents; empty project 'blank' with a session but no agents.
-(home / "radioos.tsv").write_text(
-    "radioos-api\t/data/devbox/project/.worktrees/radioos-api\tagent/radioos-api\n"
-    "radioos-web\t/data/devbox/project/.worktrees/radioos-web\tagent/radioos-web\n"
+# webapp project: two agents; empty project 'blank' with a session but no agents.
+(home / "webapp.tsv").write_text(
+    "webapp-api\t/data/devbox/project/.worktrees/webapp-api\tagent/webapp-api\n"
+    "webapp-web\t/data/devbox/project/.worktrees/webapp-web\tagent/webapp-web\n"
 )
 (home / "blank.tsv").write_text("")
 
 # resolve <project> -> session == project
-r = run("resolve", "radioos", home=home)
+r = run("resolve", "webapp", home=home)
 assert r.returncode == 0, r.stderr
-assert kv(r.stdout).get("session") == "radioos", r.stdout
+assert kv(r.stdout).get("session") == "webapp", r.stdout
 
 # resolve a registered project with no agents still yields its session
 r = run("resolve", "blank", home=home)
 assert r.returncode == 0 and kv(r.stdout).get("session") == "blank", r.stdout
 
 # resolve <project> <agent> -> session/window/worktree/branch
-r = run("resolve", "radioos", "radioos-api", home=home)
+r = run("resolve", "webapp", "webapp-api", home=home)
 assert r.returncode == 0, r.stderr
 d = kv(r.stdout)
-assert d.get("session") == "radioos", d
-assert d.get("window") == "radioos-api", d
-assert d.get("worktree") == "/data/devbox/project/.worktrees/radioos-api", d
-assert d.get("branch") == "agent/radioos-api", d
+assert d.get("session") == "webapp", d
+assert d.get("window") == "webapp-api", d
+assert d.get("worktree") == "/data/devbox/project/.worktrees/webapp-api", d
+assert d.get("branch") == "agent/webapp-api", d
 
-# list shows both projects and radioos' two agents
+# list shows both projects and webapp' two agents
 r = run("list", home=home)
 assert r.returncode == 0, r.stderr
-assert "project=radioos" in r.stdout and "project=blank" in r.stdout
-assert "radioos-api" in r.stdout and "radioos-web" in r.stdout
+assert "project=webapp" in r.stdout and "project=blank" in r.stdout
+assert "webapp-api" in r.stdout and "webapp-web" in r.stdout
 
 # --- fail closed cases ---
 # unknown project
 assert run("resolve", "ghost", home=home).returncode != 0, "unknown project must fail"
 # unknown agent
-assert run("resolve", "radioos", "radioos-nope", home=home).returncode != 0, "unknown agent must fail"
+assert run("resolve", "webapp", "webapp-nope", home=home).returncode != 0, "unknown agent must fail"
 # agent id not matching the <project>-<suffix> convention. Put an off-convention agent
 # IN the registry so this proves the convention guard rejects it BEFORE the lookup would
 # otherwise succeed (defense against a hand-edited/corrupted registry).
-(home / "radioos.tsv").write_text(
-    "radioos-api\t/data/devbox/project/.worktrees/radioos-api\tagent/radioos-api\n"
-    "radioos-web\t/data/devbox/project/.worktrees/radioos-web\tagent/radioos-web\n"
+(home / "webapp.tsv").write_text(
+    "webapp-api\t/data/devbox/project/.worktrees/webapp-api\tagent/webapp-api\n"
+    "webapp-web\t/data/devbox/project/.worktrees/webapp-web\tagent/webapp-web\n"
     "otherproj-api\t/data/devbox/project/.worktrees/otherproj-api\tagent/otherproj-api\n"
 )
-assert run("resolve", "radioos", "otherproj-api", home=home).returncode != 0, "off-convention agent must fail"
+assert run("resolve", "webapp", "otherproj-api", home=home).returncode != 0, "off-convention agent must fail"
 # a bare agent that lacks the project prefix
-assert run("resolve", "radioos", "api", home=home).returncode != 0, "unprefixed agent must fail"
+assert run("resolve", "webapp", "api", home=home).returncode != 0, "unprefixed agent must fail"
 # restore the clean two-agent registry for any later checks
-(home / "radioos.tsv").write_text(
-    "radioos-api\t/data/devbox/project/.worktrees/radioos-api\tagent/radioos-api\n"
-    "radioos-web\t/data/devbox/project/.worktrees/radioos-web\tagent/radioos-web\n"
+(home / "webapp.tsv").write_text(
+    "webapp-api\t/data/devbox/project/.worktrees/webapp-api\tagent/webapp-api\n"
+    "webapp-web\t/data/devbox/project/.worktrees/webapp-web\tagent/webapp-web\n"
 )
 
 # ambiguous/malformed registry must fail closed, not guess.

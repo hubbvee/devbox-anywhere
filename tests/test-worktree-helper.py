@@ -49,60 +49,60 @@ git("commit", "-q", "-m", "seed", cwd=repo)
 home = base / "sessions"; home.mkdir()
 wt_root = base / "worktrees"
 
-# add radioos-api -> creates worktree, branch agent/radioos-api, registry row.
-r = run("add", "radioos", "radioos-api", repo=repo, home=home, wt_root=wt_root)
+# add webapp-api -> creates worktree, branch agent/webapp-api, registry row.
+r = run("add", "webapp", "webapp-api", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode == 0, r.stderr
-wt = wt_root / "radioos-api"
+wt = wt_root / "webapp-api"
 assert (wt / ".git").exists(), "worktree checkout must exist"
-branches = git("branch", "--list", "agent/radioos-api", cwd=repo)
-assert "agent/radioos-api" in branches, branches
-reg = (home / "radioos.tsv").read_text()
-assert "radioos-api\t" in reg and str(wt) in reg and "agent/radioos-api" in reg, reg
+branches = git("branch", "--list", "agent/webapp-api", cwd=repo)
+assert "agent/webapp-api" in branches, branches
+reg = (home / "webapp.tsv").read_text()
+assert "webapp-api\t" in reg and str(wt) in reg and "agent/webapp-api" in reg, reg
 
 # the session resolver now resolves it end to end.
 res = subprocess.run(
-    ["bash", str(SESSION_TOOL), "resolve", "radioos", "radioos-api"],
+    ["bash", str(SESSION_TOOL), "resolve", "webapp", "webapp-api"],
     env=os.environ | {"DEVBOX_SESSION_HOME": str(home)}, capture_output=True, text=True)
 assert res.returncode == 0 and str(wt) in res.stdout, res.stdout + res.stderr
 
 # add a second agent -> independent worktree/branch.
-r = run("add", "radioos", "radioos-web", repo=repo, home=home, wt_root=wt_root)
+r = run("add", "webapp", "webapp-web", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode == 0, r.stderr
-assert (wt_root / "radioos-web" / ".git").exists()
+assert (wt_root / "webapp-web" / ".git").exists()
 
 # list shows both.
 r = run("list", repo=repo, home=home, wt_root=wt_root)
-assert "radioos-api" in r.stdout and "radioos-web" in r.stdout, r.stdout
+assert "webapp-api" in r.stdout and "webapp-web" in r.stdout, r.stdout
 
 # --- fail closed cases ---
 # off-convention agent name rejected, no worktree, no registry row.
-r = run("add", "radioos", "otherproj-x", repo=repo, home=home, wt_root=wt_root)
+r = run("add", "webapp", "otherproj-x", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode != 0, "off-convention agent must be rejected"
 assert not (wt_root / "otherproj-x").exists(), "rejected add must not create a worktree"
-assert "otherproj-x" not in (home / "radioos.tsv").read_text()
+assert "otherproj-x" not in (home / "webapp.tsv").read_text()
 
 # duplicate add rejected, existing worktree untouched.
-r = run("add", "radioos", "radioos-api", repo=repo, home=home, wt_root=wt_root)
+r = run("add", "webapp", "webapp-api", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode != 0, "duplicate agent add must fail"
 
 # remove refuses a dirty worktree without --force.
 (wt / "dirty.txt").write_text("uncommitted\n")
-r = run("remove", "radioos", "radioos-api", repo=repo, home=home, wt_root=wt_root)
+r = run("remove", "webapp", "webapp-api", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode != 0, "dirty worktree must not be removed without --force"
 assert wt.exists(), "worktree must survive a refused remove"
-assert "radioos-api\t" in (home / "radioos.tsv").read_text(), "registry row must survive refused remove"
+assert "webapp-api\t" in (home / "webapp.tsv").read_text(), "registry row must survive refused remove"
 
 # remove --force tears it down: worktree gone, registry row gone.
-r = run("remove", "radioos", "radioos-api", "--force", repo=repo, home=home, wt_root=wt_root)
+r = run("remove", "webapp", "webapp-api", "--force", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode == 0, r.stderr
 assert not wt.exists(), "forced remove must delete the worktree"
-assert "radioos-api\t" not in (home / "radioos.tsv").read_text(), "registry row must be gone"
+assert "webapp-api\t" not in (home / "webapp.tsv").read_text(), "registry row must be gone"
 # the other agent is untouched.
-assert "radioos-web\t" in (home / "radioos.tsv").read_text()
+assert "webapp-web\t" in (home / "webapp.tsv").read_text()
 
 # clean remove of the still-clean second agent succeeds without --force.
-r = run("remove", "radioos", "radioos-web", repo=repo, home=home, wt_root=wt_root)
+r = run("remove", "webapp", "webapp-web", repo=repo, home=home, wt_root=wt_root)
 assert r.returncode == 0, r.stderr
-assert not (wt_root / "radioos-web").exists()
+assert not (wt_root / "webapp-web").exists()
 
 print("worktree_helper=PASS")

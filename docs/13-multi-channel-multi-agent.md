@@ -57,7 +57,7 @@ executable. Run them from any shell in the devbox.
 
 ## Naming convention
 
-Agent ids **must** be `<project>-<suffix>` (e.g. `radioos-api`, `radioos-web`) so any channel
+Agent ids **must** be `<project>-<suffix>` (e.g. `webapp-api`, `webapp-web`) so any channel
 can address an agent unambiguously as `project:agent`. The helpers reject off-convention or
 colliding names.
 
@@ -70,9 +70,9 @@ colliding names.
   agents) can both write the same worktree:
 
   ```sh
-  devbox-turn take   ~/project/.worktrees/radioos-api   # claim before editing
-  devbox-turn status ~/project/.worktrees/radioos-api   # see the current holder
-  devbox-turn release ~/project/.worktrees/radioos-api  # hand it back
+  devbox-turn take   ~/project/.worktrees/webapp-api   # claim before editing
+  devbox-turn status ~/project/.worktrees/webapp-api   # see the current holder
+  devbox-turn release ~/project/.worktrees/webapp-api  # hand it back
   ```
 
   Acquisition is atomic (only one taker wins a race). A lock left idle past
@@ -82,11 +82,11 @@ colliding names.
 ## Example: two agents on one project
 
 ```sh
-devbox-worktree add radioos radioos-api    # window radioos-api, branch agent/radioos-api
-devbox-worktree add radioos radioos-web    # window radioos-web, branch agent/radioos-web
+devbox-worktree add webapp webapp-api    # window webapp-api, branch agent/webapp-api
+devbox-worktree add webapp webapp-web    # window webapp-web, branch agent/webapp-web
 devbox-session list                        # confirm both agents
 # run an agent CLI in each window; drive either one from terminal, Telegram, or Slack.
-devbox-worktree remove radioos radioos-api # clean removal once merged (refuses dirty WIP)
+devbox-worktree remove webapp webapp-api # clean removal once merged (refuses dirty WIP)
 ```
 
 ## What this is not

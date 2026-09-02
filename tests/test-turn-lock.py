@@ -32,8 +32,8 @@ assert TOOL.is_file(), "scripts/devbox-turn must exist"
 state = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-"))
 # Worktrees must be real directories; `take` refuses a path that does not exist.
 wt_root = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-wt-"))
-WT = str(wt_root / "radioos-api"); pathlib.Path(WT).mkdir()
-WT2 = str(wt_root / "radioos-web"); pathlib.Path(WT2).mkdir()
+WT = str(wt_root / "webapp-api"); pathlib.Path(WT).mkdir()
+WT2 = str(wt_root / "webapp-web"); pathlib.Path(WT2).mkdir()
 
 # take on a nonexistent worktree must fail closed (not lock a typo'd path).
 missing = str(wt_root / "does-not-exist")
