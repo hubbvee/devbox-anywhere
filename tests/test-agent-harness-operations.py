@@ -50,6 +50,10 @@ assert "--expose-ssh" in public_report["install_command"]
 
 with tempfile.TemporaryDirectory() as td:
     root = pathlib.Path(td)
+    # Hermeticity: pin the fixture umask so fabricated state dirs get host-independent
+    # modes. Without this, a host umask of 0002 makes the install/ dir group-writable
+    # (0775) and the harness correctly rejects it, failing this test only on such hosts.
+    os.umask(0o022)
     fake_bin = root / "bin"
     fake_bin.mkdir()
     docker_log = root / "docker-calls.jsonl"
