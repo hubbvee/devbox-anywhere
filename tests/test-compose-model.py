@@ -19,6 +19,26 @@ def fail(message: str) -> None:
     raise AssertionError(message)
 
 
+# Values the installer guarantees in the generated .env. Every `${VAR:?...}` in the Compose
+# file must be covered here: current Compose interpolates EVERY profile during `config`, so
+# a required variable belonging to an unselected profile (browser) still has to be present
+# for the file to render. install-devbox already guarantees this for real installs; this
+# seed must mirror that guarantee or the render check tests a shape no install ever has.
+ENV_SEED = (
+    "DEVBOX_PASSWORD=TEST_ONLY_NOT_A_SECRET\n"
+    "DEVBOX_BROWSER_PASSWORD=TEST_ONLY_NOT_A_SECRET\n"
+    "DEVBOX_DATA_ROOT=/data/devbox\n"
+    "DEVBOX_WEB_BIND=127.0.0.1\n"
+    "DEVBOX_SSH_BIND=127.0.0.1\n"
+)
+
+_required = set(re.findall(r"\$\{([A-Z_]+):\?", text))
+_seeded = {line.split("=", 1)[0] for line in ENV_SEED.splitlines() if line}
+_uncovered = sorted(_required - _seeded)
+if _uncovered:
+    fail(f"seed_missing_required_var:{','.join(_uncovered)}")
+
+
 # Enforce the complete schema used by this deliberately small Compose file. This catches
 # extra services and behavior-changing keys such as privileged/network_mode/cap_add.
 structural = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
@@ -178,12 +198,7 @@ if docker:
     if probe.returncode == 0:
         with tempfile.TemporaryDirectory(prefix="compose-model-") as tmp:
             env_file = pathlib.Path(tmp) / "compose.env"
-            env_file.write_text(
-                "DEVBOX_PASSWORD=TEST_ONLY_NOT_A_SECRET\n"
-                "DEVBOX_DATA_ROOT=/data/devbox\n"
-                "DEVBOX_WEB_BIND=127.0.0.1\n"
-                "DEVBOX_SSH_BIND=127.0.0.1\n"
-            )
+            env_file.write_text(ENV_SEED)
             clean_env = {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "HOME": os.environ.get("HOME", "/tmp"),
