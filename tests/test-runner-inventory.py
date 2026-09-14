@@ -18,6 +18,7 @@ expected = [
     "python3 tests/test-session-registry.py",
     "python3 tests/test-turn-lock.py",
     "python3 tests/test-worktree-helper.py",
+    "python3 tests/test-relink-dropins.py",
     "python3 tests/test-runner-inventory.py",
 ]
 actual = [line for line in lines if line.startswith(("tests/", "python3 tests/"))]
