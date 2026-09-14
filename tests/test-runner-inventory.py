@@ -10,6 +10,7 @@ expected = [
     "python3 tests/test-headless-browser.py",
     "python3 tests/test-browser-service.py",
     "python3 tests/test-install-devbox-lifecycle.py",
+    "python3 tests/test-install-preserve.py",
     "python3 tests/test-source-trust.py",
     "python3 tests/test-mutations.py",
     "python3 tests/test-agent-harness.py",
