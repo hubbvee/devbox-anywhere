@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# devbox-daemon — declarative, rebuild-safe supervision of long-running helpers.
+#
+# On this image systemd is present but is NOT PID 1 (dumb-init runs init), so
+# `hermes gateway install` never runs and a hand-started tmux session dies on every
+# container rebuild and never comes back. This helper declares daemons in
+# ~/.local/share/devbox-daemons.d/*.conf and brings them up idempotently, so the
+# relink hook can restore them at boot with no human action.
+#
+# It is SUPERVISION CONVENIENCE, not a security or sandbox boundary.
+#
+# Declaration file (~/.local/share/devbox-daemons.d/<name>.conf), one "key value" per line:
+#   name          required  the daemon id (should match the file stem)
+#   command       required  the shell command to launch
+#   tmux_session  optional  session name for the DEFAULT (tmux) backend; defaults to name
+#   backend       optional  defaults to "tmux"; a non-tmux value is expressible so callers
+#                           (e.g. verify) do not have to parse tmux details
+#
+# Usage:
+#   devbox-daemon status <name>     print running/stopped; exit 0 iff running
+#   devbox-daemon start <name>      start if not already running (idempotent)
+#   devbox-daemon stop <name>       stop if running
+#   devbox-daemon start-all         start every declared daemon; exit non-zero if any failed
+#   devbox-daemon status-all        print "<name>\t<running|stopped>" per declared daemon
+#
+# status is the SINGLE SOURCE OF TRUTH for liveness. verify delegates to it.
+set -eu
+
+DAEMON_DIR=${DEVBOX_DAEMON_DIR:-${HOME:-/tmp}/.local/share/devbox-daemons.d}
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+conf_for() { printf '%s/%s.conf\n' "$DAEMON_DIR" "$1"; }
+
+# Read one declared field from a conf file: field_value <conf> <key>. Prints the first match's
+# value (everything after the key and its following whitespace), empty if absent.
+field_value() {
+  sed -n "s/^$2[[:space:]]\{1,\}//p" "$1" 2>/dev/null | head -n1
+}
+
+# Resolve a declared daemon into: NAME, COMMAND, BACKEND, SESSION. Fails closed if undeclared or
+# missing a required field.
+load_decl() {
+  name=$1
+  [ -n "$name" ] || die "daemon name required"
+  case "$name" in -*) die "invalid daemon name: $name" ;; esac
+  conf=$(conf_for "$name")
+  [ -f "$conf" ] || die "unknown daemon: $name (no $conf)"
+  NAME=$(field_value "$conf" name); [ -n "$NAME" ] || NAME=$name
+  COMMAND=$(field_value "$conf" command)
+  BACKEND=$(field_value "$conf" backend); [ -n "$BACKEND" ] || BACKEND=tmux
+  SESSION=$(field_value "$conf" tmux_session); [ -n "$SESSION" ] || SESSION=$NAME
+}
+
+# --- tmux backend (default) --------------------------------------------------------------------
+tmux_is_running() { command -v tmux >/dev/null 2>&1 && tmux has-session -t "$SESSION" 2>/dev/null; }
+tmux_start() {
+  command -v tmux >/dev/null 2>&1 || die "tmux is required for the default backend but is not installed"
+  # new-session -d does not propagate the command's exit code, so start-then-verify: if the daemon
+  # command died immediately, no session exists and this returns non-zero.
+  tmux new-session -d -s "$SESSION" "$COMMAND"
+  tmux has-session -t "$SESSION" 2>/dev/null
+}
+tmux_stop() { command -v tmux >/dev/null 2>&1 && tmux kill-session -t "$SESSION" 2>/dev/null || true; }
+
+# --- backend dispatch --------------------------------------------------------------------------
+# Liveness is judged BY THE DECLARED BACKEND. Only the tmux backend has a built-in liveness check;
+# an unrecognized backend fails closed (never "running") rather than falling back to a raw tmux
+# has-session, which would wrongly report a same-named tmux session as this daemon.
+backend_is_running() {
+  case "$BACKEND" in
+    tmux) tmux_is_running ;;
+    *) return 1 ;;
+  esac
+}
+backend_start() {
+  case "$BACKEND" in
+    tmux) tmux_start ;;
+    *) die "unsupported backend '$BACKEND' for $NAME: no start implementation" ;;
+  esac
+}
+backend_stop() {
+  case "$BACKEND" in
+    tmux) tmux_stop ;;
+    *) die "unsupported backend '$BACKEND' for $NAME: no stop implementation" ;;
+  esac
+}
+
+cmd_status() {
+  load_decl "$1"
+  if backend_is_running; then
+    printf '%s running\n' "$NAME"; return 0
+  else
+    printf '%s stopped\n' "$NAME"; return 1
+  fi
+}
+
+cmd_start() {
+  load_decl "$1"
+  [ -n "$COMMAND" ] || die "daemon $NAME has no command"
+  if backend_is_running; then
+    printf '%s already running\n' "$NAME"; return 0
+  fi
+  backend_start || die "failed to start $NAME"
+  printf '%s started\n' "$NAME"
+}
+
+cmd_stop() {
+  load_decl "$1"
+  backend_stop
+  printf '%s stopped\n' "$NAME"
+}
+
+# Enumerate declared daemon names (conf stems), sorted, safe when the dir is absent/empty.
+declared_names() {
+  [ -d "$DAEMON_DIR" ] || return 0
+  for c in "$DAEMON_DIR"/*.conf; do
+    [ -e "$c" ] || continue
+    b=${c##*/}; printf '%s\n' "${b%.conf}"
+  done | LC_ALL=C sort
+}
+
+cmd_start_all() {
+  rc=0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    # Attempt EVERY daemon; a broken one must not abort the others. Record trouble in rc so the
+    # CLI is honest, but keep going (the relink hook neutralizes rc with `|| true`).
+    if ( cmd_start "$n" ); then :; else rc=1; fi
+  done <<EOF
+$(declared_names)
+EOF
+  return "$rc"
+}
+
+cmd_status_all() {
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if ( cmd_status "$n" >/dev/null 2>&1 ); then
+      printf '%s\trunning\n' "$n"
+    else
+      printf '%s\tstopped\n' "$n"
+    fi
+  done <<EOF
+$(declared_names)
+EOF
+}
+
+[ $# -ge 1 ] || die "usage: devbox-daemon {status|start|stop} <name> | {start-all|status-all}"
+action=$1; shift || true
+case "$action" in
+  status)     [ $# -ge 1 ] || die "status needs a daemon name"; cmd_status "$1" ;;
+  start)      [ $# -ge 1 ] || die "start needs a daemon name";  cmd_start "$1" ;;
+  stop)       [ $# -ge 1 ] || die "stop needs a daemon name";   cmd_stop "$1" ;;
+  start-all)  cmd_start_all ;;
+  status-all) cmd_status_all ;;
+  *) die "unknown action: $action" ;;
+esac

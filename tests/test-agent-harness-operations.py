@@ -77,6 +77,7 @@ elif args == ["--context", "default", "inspect", "--format", "{{{{json .Mounts}}
     ]))
 elif args in [
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox"],
+    ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-daemon"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-relink"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-session"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-turn"],
@@ -128,7 +129,7 @@ else:
     assert verify_report["ok"] is True
     ids = {item["id"] for item in verify_report["checks"] if item["status"] == "pass"}
     assert ids == {
-        "state.file", "container.running", "helper.devbox", "helper.devbox-relink",
+        "state.file", "container.running", "helper.devbox", "helper.devbox-daemon", "helper.devbox-relink",
         "helper.devbox-session", "helper.devbox-turn", "helper.devbox-worktree",
         "service.http", "service.ssh", "network.bindings", "storage.mounts",
     }, "verify_check_ids"
