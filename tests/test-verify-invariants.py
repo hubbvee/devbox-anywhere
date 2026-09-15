@@ -30,8 +30,8 @@ SOURCE_HARNESS = ROOT / "scripts/devbox-anywhere"
 # them as module constants so this test pins the *real* probe strings rather than duplicating them.
 HARNESS_TEXT = SOURCE_HARNESS.read_text()
 import re as _re
-_rt = _re.search(r'RELINK_TARGETS_PROBE = (".*?"|\'\'\'.*?\'\'\'|""".*?""")', HARNESS_TEXT, _re.DOTALL)
-_dd = _re.search(r'DAEMON_DECLARED_PROBE = (".*?"|\'\'\'.*?\'\'\'|""".*?""")', HARNESS_TEXT, _re.DOTALL)
+_rt = _re.search(r'RELINK_TARGETS_PROBE = (r?""".*?"""|r?\'\'\'.*?\'\'\'|r?".*?"|r?\'.*?\')', HARNESS_TEXT, _re.DOTALL)
+_dd = _re.search(r'DAEMON_DECLARED_PROBE = (r?""".*?"""|r?\'\'\'.*?\'\'\'|r?".*?"|r?\'.*?\')', HARNESS_TEXT, _re.DOTALL)
 assert _rt, "harness must define RELINK_TARGETS_PROBE (Part B)"
 assert _dd, "harness must define DAEMON_DECLARED_PROBE (Part B)"
 RELINK_TARGETS_PROBE = eval(_rt.group(1))
@@ -54,8 +54,8 @@ def build_harness(root: pathlib.Path, relink_probe_out: str, daemon_probe_out: s
         "args = sys.argv[1:]\n"
         f"relink_out = {relink_probe_out!r}\n"
         f"daemon_out = {daemon_probe_out!r}\n"
-        "if len(args) >= 9 and args[7] == '/bin/sh' and args[8] == '-c':\n"
-        "    script = args[9] if len(args) > 9 else ''\n"
+        "if len(args) >= 11 and args[8] == '/bin/sh' and args[9] == '-c':\n"
+        "    script = args[10]\n"
         "    if 'relink.targets probe' in script:\n"
         "        sys.stdout.write(relink_out); sys.exit(0)\n"
         "    if 'daemon.declared probe' in script:\n"

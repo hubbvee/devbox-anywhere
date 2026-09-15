@@ -30,6 +30,67 @@ def check(check_id: str, passed: bool, summary: str) -> dict[str, str]:
     return {"id": check_id, "status": "pass" if passed else "fail", "summary": summary}
 
 
+def warn_check(check_id: str, ok: bool, summary: str) -> dict[str, str]:
+    # Warn-only: a non-ok result is "warn", never "fail", so it cannot clear the aggregate ok.
+    # AGENTS.md step 8 gates installs on verify --json ok: true; these checks must not start
+    # blocking installs that passed yesterday. Promotion to fail is a later release.
+    return {"id": check_id, "status": "pass" if ok else "warn", "summary": summary}
+
+
+# Constant-argv container probes (run as `/bin/sh -c "$PROBE"` inside devbox, same constant-argv
+# discipline as the installer preservation blob). Output is machine-parsed and carries only link
+# paths / daemon names -- never environment values or secrets. POSIX sh only (container may be dash).
+RELINK_TARGETS_PROBE = r"""
+# relink.targets probe: emit one DANGLING line per managed symlink that is absent or does not
+# resolve; healthy links emit nothing. Sources are the shipped relink lines in the on-box
+# devbox-relink plus every ~/.local/share/devbox-relink.d/*.conf pair -- the same set the helper
+# manages. eval expands $HOME inside quoted paths exactly as the helper would.
+rl="$HOME/.local/bin/devbox-relink"
+dd="$HOME/.local/share/devbox-relink.d"
+report_link() {
+  t=$(eval printf %s "$1"); l=$(eval printf %s "$2")
+  if [ ! -L "$l" ] || [ ! -e "$l" ]; then printf 'DANGLING %s -> %s
+' "$l" "$t"; fi
+}
+if [ -f "$rl" ]; then
+  grep -E '^[[:space:]]*relink ' "$rl" | while read -r _kw target link _rest; do
+    [ -n "$target" ] && [ -n "$link" ] && report_link "$target" "$link"
+  done
+fi
+if [ -d "$dd" ]; then
+  for c in "$dd"/*.conf; do
+    [ -e "$c" ] || continue
+    while read -r target link extra || [ -n "$target" ]; do
+      case "$target" in ''|\#*) continue ;; esac
+      [ -n "$link" ] && [ -z "$extra" ] || continue
+      report_link "$target" "$link"
+    done < "$c"
+  done
+fi
+"""
+
+DAEMON_DECLARED_PROBE = r"""
+# daemon.declared probe: for each daemon declared in ~/.local/share/devbox-daemons.d/*.conf emit
+# a "<name>	<running|stopped>" line. Absent directory emits nothing, so the check is skipped
+# rather than failed. Running state is a detached tmux session (the default backend), which works
+# under dumb-init without systemd.
+dd="$HOME/.local/share/devbox-daemons.d"
+[ -d "$dd" ] || exit 0
+for c in "$dd"/*.conf; do
+  [ -e "$c" ] || continue
+  name=$(sed -n 's/^name[[:space:]]\{1,\}//p' "$c" | head -1)
+  [ -n "$name" ] || continue
+  sess=$(sed -n 's/^tmux_session[[:space:]]\{1,\}//p' "$c" | head -1)
+  [ -n "$sess" ] || sess="$name"
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    printf '%s\trunning\n' "$name"
+  else
+    printf '%s\tstopped\n' "$name"
+  fi
+done
+"""
+
+
 def emit_error(command: str, message: str, exit_code: int, as_json: bool) -> int:
     if as_json:
         print(json.dumps({
@@ -286,10 +347,38 @@ def verify_report() -> dict[str, Any]:
         ssh_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"])
         checks.append(check("service.http", http_ok, "code-server responds inside the container" if http_ok else "code-server readiness failed"))
         checks.append(check("service.ssh", ssh_ok, "SSH responds inside the container" if ssh_ok else "SSH readiness failed"))
+
+        # relink.targets (warn-only): every symlink devbox-relink manages must resolve. A dangling
+        # or missing target is surfaced as a warn naming the path -- previously invisible (a
+        # dangling ~/.hermes still returned ok: true).
+        relink_probe = docker_result(docker, ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", RELINK_TARGETS_PROBE])
+        if relink_probe.returncode == 0:
+            dangling = [line[len("DANGLING "):] for line in relink_probe.stdout.splitlines() if line.startswith("DANGLING ")]
+            if dangling:
+                checks.append(warn_check("relink.targets", False, "unresolved relink targets: " + "; ".join(dangling)))
+            else:
+                checks.append(warn_check("relink.targets", True, "all relink targets resolve"))
+        else:
+            checks.append(warn_check("relink.targets", False, "relink target probe could not run"))
+
+        # daemon.<name> (warn-only): each declared daemon should be running. Absent daemons.d ->
+        # no daemon checks (skipped, not failed). A declared-but-down daemon is a warn.
+        daemon_probe = docker_result(docker, ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", DAEMON_DECLARED_PROBE])
+        if daemon_probe.returncode == 0:
+            for line in daemon_probe.stdout.splitlines():
+                if not line.strip():
+                    continue
+                parts = line.split("\t")
+                name = parts[0].strip()
+                state = parts[1].strip() if len(parts) > 1 else "stopped"
+                if not name:
+                    continue
+                running = state == "running"
+                checks.append(warn_check(f"daemon.{name}", running, f"{name} daemon is running" if running else f"{name} daemon is declared but not running"))
     return {
         "schema_version": SCHEMA_VERSION,
         "command": "verify",
-        "ok": all(item["status"] == "pass" for item in checks),
+        "ok": all(item["status"] != "fail" for item in checks),
         "network": {
             "web_bind": settings.get("DEVBOX_WEB_BIND", "unknown"),
             "ssh_bind": settings.get("DEVBOX_SSH_BIND", "unknown"),
@@ -310,7 +399,7 @@ def verify(as_json: bool) -> int:
 
 def diagnose(as_json: bool) -> int:
     verification = verify_report()
-    failed = [item["id"] for item in verification["checks"] if item["status"] != "pass"]
+    failed = [item["id"] for item in verification["checks"] if item["status"] == "fail"]
     clean_docker = f"sudo env -i PATH={SAFE_PATH} HOME=/root LANG=C LC_ALL=C DOCKER_CONFIG={DOCKER_CONFIG} docker --context default"
     recovery = [
         f"{clean_docker} logs devbox",
