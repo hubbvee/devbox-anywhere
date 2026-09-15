@@ -6,11 +6,14 @@
 #
 # Install (inside the container): cp devbox-relink ~/.local/bin/ && chmod +x ~/.local/bin/devbox-relink
 #
-# PATTERN: whenever a CLI stores its login/config OUTSIDE ~/.local (e.g. ~/.config/<tool>),
-# move the real dir into ~/.local/share/ once, then add a relink line here. The tool's
-# auth then survives rebuilds like everything else.
+# CUSTOM RELINKS (upgrade-safe): do NOT edit this shipped file to add your own tools -- an
+# upgrade overwrites it. Instead move the real dir into ~/.local/share/ once, then drop a
+# .conf file into ~/.local/share/devbox-relink.d/ with one "target link" pair per line
+# (# comments and blank lines ignored). Those survive upgrades because the installer never
+# writes into that dir. Example:
 #   mv ~/.config/mytool ~/.local/share/mytool-config
-#   relink "$HOME/.local/share/mytool-config" "$HOME/.config/mytool"
+#   echo "$HOME/.local/share/mytool-config $HOME/.config/mytool" \
+#     > ~/.local/share/devbox-relink.d/10-mytool.conf
 set -e
 relink() {
   local target=$1 link=$2
@@ -24,5 +27,36 @@ relink "$HOME/.local/share/terminfo"   "$HOME/.terminfo"      # exotic TERMs (gh
 relink "$HOME/.local/share/gh-config"  "$HOME/.config/gh"     # GitHub CLI login
 relink "$HOME/.local/share/gitconfig"  "$HOME/.gitconfig"     # user-level git config
 relink "$HOME/.local/secrets"          "$HOME/.secrets"       # shared main.env, see docs/06
-# Add your own tools below (one line per tool):
-# relink "$HOME/.local/share/mytool-config" "$HOME/.config/mytool"
+
+# Operator drop-ins (upgrade-safe): ~/.local/share/devbox-relink.d/*.conf, one "target link"
+# pair per line. Loaded AFTER the shipped relinks, in LC_ALL=C sorted filename order, so a
+# later file wins a contested link deterministically. A target that does not exist is reported
+# and skipped -- never a dangling link. A line that is not exactly "target link" (missing link,
+# or an extra field such as a space in a path) is reported as malformed and skipped -- never a
+# link at a silently truncated path. An unreadable drop-in dir warns and is skipped. If the dir
+# is absent, behavior is byte-identical to a shipped-only install.
+dropin_dir="$HOME/.local/share/devbox-relink.d"
+if [ -d "$dropin_dir" ]; then
+  if [ -r "$dropin_dir" ] && [ -x "$dropin_dir" ]; then
+    LC_ALL=C  # deterministic glob collation regardless of ambient locale
+    for conf in "$dropin_dir"/*.conf; do
+      [ -e "$conf" ] || continue  # no matches -> literal glob, skip
+      while read -r target link extra || [ -n "$target" ]; do
+        case "$target" in ''|\#*) continue ;; esac  # blank / comment
+        if [ -z "$link" ] || [ -n "$extra" ]; then
+          # not exactly "target link": missing link, or extra field (e.g. a space in a path).
+          # Refuse rather than link at a truncated path.
+          echo "  skip (malformed, need exactly 'target link'): $conf: $target${link:+ $link}${extra:+ $extra}" >&2
+          continue
+        fi
+        if [ ! -e "$target" ]; then
+          echo "  skip (missing source): $link -> $target" >&2
+          continue
+        fi
+        relink "$target" "$link"
+      done < "$conf"
+    done
+  else
+    echo "  WARN: $dropin_dir is unreadable; skipping drop-ins" >&2
+  fi
+fi

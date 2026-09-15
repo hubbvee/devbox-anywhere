@@ -235,12 +235,43 @@ fi
 "${compose[@]}" up -d
 
 helpers="devbox devbox-relink devbox-session devbox-turn devbox-worktree"
+# A3: preserve operator customization across upgrades (fixes D1). Constant-argv backup: a
+# differing on-box helper is copied to <helper>.pre-upgrade.<utc>.bak before overwrite, with a
+# machine-readable PRESERVED notice; an identical file is left untouched. For devbox-relink we
+# also report any operator in-file `relink` lines not in the shipped file and point at the
+# drop-in dir -- reported only, never auto-migrated. Deliberately uses `sh -c` instead of the
+# plain `install` path so the exec argv is byte-identical for all helpers and across re-installs.
+preserve_install_blob='set -e
+h=$1
+base=$2
+src=/tmp/$h
+dst=$base/$h
+if [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
+  bak=$dst.pre-upgrade.$(date -u +%Y%m%dT%H%M%SZ).bak
+  cp -p "$dst" "$bak"
+  printf "PRESERVED %s %s\\n" "$dst" "$bak"
+  if [ "$h" = devbox-relink ]; then
+    shipped=$(mktemp)
+    grep -E "^[[:space:]]*relink " "$src" 2>/dev/null > "$shipped" || true
+    grep -E "^[[:space:]]*relink " "$dst" 2>/dev/null | grep -vxF -f "$shipped" > "${shipped}.x" || true
+    if [ -s "${shipped}.x" ]; then
+      printf "CUSTOM_RELINK_LINES %s preserved in %s; re-add as ~/.local/share/devbox-relink.d/*.conf (not auto-migrated)\\n" "$dst" "$bak"
+      while IFS= read -r line; do printf "CUSTOM_RELINK_LINE %s\\n" "$line"; done < "${shipped}.x"
+    fi
+    rm -f "$shipped" "${shipped}.x"
+  fi
+fi
+install -m 0755 "$src" "$dst"'
 for helper in $helpers; do
   "${docker_cmd[@]}" cp "$REPO_ROOT/scripts/$helper" "devbox:/tmp/$helper"
   "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
-    /usr/bin/install -m 0755 "/tmp/$helper" "/home/coder/.local/bin/$helper"
+    /bin/sh -c "$preserve_install_blob" _ "$helper" /home/coder/.local/bin
   "${docker_cmd[@]}" exec --user root --env PATH=/usr/sbin:/usr/bin:/sbin:/bin devbox /usr/bin/rm -f "/tmp/$helper"
 done
+# A3: ensure the upgrade-safe operator drop-in dir exists at 0700. Created only if absent
+# (mkdir -p is a no-op when present); the installer never writes into it.
+"${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+  /usr/bin/mkdir -p -m 0700 /home/coder/.local/share/devbox-relink.d
 
 # Build the readiness probe from the same helper list so it always matches what we installed.
 readiness='/usr/bin/tmux -V >/dev/null'
