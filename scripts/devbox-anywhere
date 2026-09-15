@@ -13,7 +13,7 @@ import re
 import stat
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REAL_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ROOT = REAL_ROOT
 SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

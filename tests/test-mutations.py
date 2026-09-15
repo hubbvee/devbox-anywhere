@@ -107,6 +107,7 @@ CASES = [
     ("relink-missing-source-not-skipped", "scripts/devbox-relink", 'echo "  skip (missing source): $link -> $target" >&2\n          continue', 'echo "  skip (missing source): $link -> $target" >&2\n          :', ["python3", "tests/test-relink-dropins.py"], "never create a dangling link"),
     ("relink-extra-field-guard-removed", "scripts/devbox-relink", 'if [ -z "$link" ] || [ -n "$extra" ]; then', 'if [ -z "$link" ]; then', ["python3", "tests/test-relink-dropins.py"], "never create a link at the truncated path"),
     ("installer-backup-removed", "scripts/install-devbox", 'cp -p "$dst" "$bak"', ":", ["python3", "tests/test-install-preserve.py"], "expected exactly one backup"),
+    ("relink-targets-ignores-dangling", "scripts/devbox-anywhere", "            if dangling:", "            if False:", ["python3", "tests/test-verify-invariants.py"], "must be WARN"),
 ]
 
 for case in CASES:

@@ -68,7 +68,7 @@ esac
     result = run("preflight", "--json", env=env)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["command"] == "preflight"
     assert report["ok"] is True
     assert report["network"]["web_bind"] == "127.0.0.1"
