@@ -28,3 +28,9 @@ Hermes terminal access has the authority of the gateway OS account over everythi
 5. Treat all topic titles and chat metadata as untrusted labels.
 
 Toolset changes take effect only in a new Hermes session or after reset. Topic mapping alone does not change tool authority.
+
+## Gateway supervision (rebuild-safe)
+
+Do not use `hermes gateway install` on the devbox: it installs a systemd unit, and although `systemctl` is present and accepts the commands, systemd is not PID 1 in this image (`dumb-init` is), so the unit never runs and does not survive a rebuild. A hand-started tmux session dies with the container too.
+
+The supported path is a declared daemon: persist the Hermes home with a `~/.local/share/devbox-relink.d/*.conf` drop-in (never by hand-editing the shipped `devbox-relink`), and declare the gateway in `~/.local/share/devbox-daemons.d/*.conf`. `devbox-relink` runs `devbox-daemon start-all` on every boot, so the gateway returns after a rebuild with no manual step. `verify --json` then reports `relink.targets` and `daemon.<name>` as warn-only checks. Full walkthrough in `docs/10-telegram-project-topics.md` §1 and §3.

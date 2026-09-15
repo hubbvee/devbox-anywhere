@@ -82,13 +82,22 @@ ln -s ~/.local/share/hermes-home ~/.hermes
 )
 ```
 
-Add this line to the local copy of `~/.local/bin/devbox-relink` so a rebuilt container
-restores the link automatically. This line is intentionally opt-in: adding it before
-`hermes-home` exists would make `~/.hermes` a dangling link and can break the installer.
+Make this link survive container rebuilds. Do **not** hand-edit
+`~/.local/bin/devbox-relink` to add it: that file is a shipped helper, and the next
+`install-devbox` upgrade overwrites it, silently discarding your edit. Instead drop an
+upgrade-safe `.conf` into the operator drop-in directory, which the installer creates but
+never writes into. Each line is one `target link` pair; `devbox-relink` applies the shipped
+links first, then every `*.conf` drop-in:
 
 ```bash
-relink "$HOME/.local/share/hermes-home" "$HOME/.hermes"
+mkdir -p -m 0700 ~/.local/share/devbox-relink.d
+echo "$HOME/.local/share/hermes-home $HOME/.hermes" \
+  > ~/.local/share/devbox-relink.d/10-hermes-home.conf
 ```
+
+This is intentionally added only after `hermes-home` exists: a drop-in that names a missing
+target is reported and skipped rather than creating a dangling `~/.hermes`, but there is no
+reason to declare it early.
 
 Run it once and verify the paths:
 
@@ -163,22 +172,45 @@ chmod 700 ~/.local/share/hermes-home
 chmod 600 ~/.hermes/.env
 ```
 
-To keep the gateway running after you disconnect, install and start its service. Keep the
-devbox and host firewalls closed to unsolicited gateway ports; Telegram long polling does
-not require an inbound public listener:
+To keep the gateway running after you disconnect, it must be supervised so it comes back on
+its own. Keep the devbox and host firewalls closed to unsolicited gateway ports; Telegram
+long polling does not require an inbound public listener.
+
+**Do not use `hermes gateway install` on this devbox.** That command installs a systemd
+service, and the trap is that it *looks* like it should work: `systemctl` is present on the
+image and accepts the commands without error. But in this container systemd is **not PID 1** —
+`dumb-init` is the init process — so the systemd user/system manager never actually runs your
+unit. The service is registered and inert: `hermes gateway status` may even look plausible
+while nothing supervises the process, and after a container rebuild the gateway is simply
+gone. A gateway started by hand in a plain tmux session has the same fate: the session dies
+with the container and never comes back.
+
+The supported path on this devbox is a **declared daemon**, which `devbox-relink` restarts on
+every rebuild. Declare the gateway once in the daemon drop-in directory (`name`, `command`,
+and an optional `tmux_session`; the default backend is a detached tmux session, which works
+under `dumb-init` with no systemd):
 
 ```bash
-hermes gateway install
-hermes gateway start
-hermes gateway status
+mkdir -p -m 0700 ~/.local/share/devbox-daemons.d
+cat > ~/.local/share/devbox-daemons.d/telegram-gateway.conf <<'EOF'
+name telegram-gateway
+command hermes gateway run
+tmux_session telegram-gateway
+EOF
 ```
 
-If service installation is unavailable in your container, run the gateway in its own
-tmux session instead:
+Start it now and confirm it is up. `devbox-daemon start` is start-if-not-running, so it is
+safe to re-run; `status` is the source of truth for liveness (exit 0 and `running` when up):
 
 ```bash
-tmux new-session -d -s telegram-gateway 'hermes gateway run'
+devbox-daemon start telegram-gateway
+devbox-daemon status telegram-gateway
 ```
+
+From here on it is automatic: `devbox-relink` runs on every container boot and finishes by
+running `devbox-daemon start-all`, so the gateway is brought back after a rebuild with no
+manual step. You can rehearse that recovery at any time by re-running `devbox-relink` (it
+relinks and starts declared daemons for real — it is not a dry run).
 
 Send the bot a DM and confirm it replies. Useful diagnostics:
 
@@ -186,6 +218,29 @@ Send the bot a DM and confirm it replies. Useful diagnostics:
 hermes logs gateway -f
 hermes send --list telegram
 ```
+
+### What `verify --json` reports once this is wired
+
+After the drop-in and the declaration above, the harness `verify` confirms both halves of the
+setup, so you can check hands-off recovery without a rebuild. Two checks are relevant (both are
+advisory `warn` checks — they never flip the overall `ok`, they surface attention):
+
+```bash
+sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json
+```
+
+- `relink.targets` — with `10-hermes-home.conf` in place and `~/.hermes` resolving, this is
+  `pass`. If the target is missing (you declared it too early, or `hermes-home` moved), it
+  becomes `warn` and names the offending path, e.g. `/home/coder/.hermes` — instead of the old
+  behavior where a dangling `~/.hermes` still reported healthy.
+- `daemon.telegram-gateway` — `pass` while the gateway is running, `warn` when it is declared
+  but not running. verify asks `devbox-daemon` for this state, so it reflects the same liveness
+  as `devbox-daemon status telegram-gateway`.
+
+A healthy install therefore shows `ok: true` with `relink.targets: pass` and
+`daemon.telegram-gateway: pass`. To see the warn path deliberately, stop the gateway
+(`devbox-daemon stop telegram-gateway`) and re-run verify: `daemon.telegram-gateway` becomes
+`warn` while `ok` stays `true`.
 
 ## 4. Create the private forum group
 
@@ -443,8 +498,25 @@ PID, and current Git status. Do not launch a second agent into the occupied chec
 
 ### Gateway disappears after a container rebuild
 
-Verify `~/.hermes` still links to `~/.local/share/hermes-home`, run
-`devbox-relink`, and restart the gateway service or `telegram-gateway` tmux session.
+First confirm the persisted home link is back: `~/.hermes` should point at
+`~/.local/share/hermes-home`. If it does not, run `devbox-relink` (it restores the link from
+your `devbox-relink.d/*.conf` drop-in and then runs `devbox-daemon start-all`).
+
+If the gateway is still down, it is almost always one of two things:
+
+- You used `hermes gateway install` instead of a declared daemon. The systemd unit is inert on
+  this image (systemd is not PID 1), so it never survives a rebuild. Declare the gateway in
+  `~/.local/share/devbox-daemons.d/` as shown in §3.
+- The declaration exists but the daemon is not up. Check and start it directly:
+
+  ```bash
+  devbox-daemon status telegram-gateway
+  devbox-daemon start telegram-gateway
+  ```
+
+`sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json` shows
+`daemon.telegram-gateway` and `relink.targets` so you can confirm both the link and the
+process from one command.
 
 Next: [11 — Switch coding agents mid-session](11-switch-coding-agents-mid-session.md),
 or return to [README](../README.md).

@@ -54,6 +54,14 @@ executable. Run them from any shell in the devbox.
   branch. Refuses to drop a worktree with uncommitted changes unless `--force`.
 - `devbox-turn take|release|status <worktree>` — claim / release / inspect the one-writer
   turn for a checkout.
+- `devbox-daemon start|status|stop <name>` / `start-all` / `status-all` — supervise
+  long-running helpers (e.g. a Hermes gateway) declared in
+  `~/.local/share/devbox-daemons.d/*.conf`. Start is start-if-not-running; `status` is the
+  liveness source of truth. `devbox-relink` runs `devbox-daemon start-all` on every container
+  boot, so declared daemons come back after a rebuild with no manual step. The default backend
+  is a detached tmux session, which works on this image where systemd is present but not PID 1
+  (so `hermes gateway install` does not). See `docs/10-telegram-project-topics.md` for the full
+  gateway example.
 
 ## Naming convention
 
