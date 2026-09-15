@@ -12,6 +12,7 @@ python3 tests/test-source-trust.py
 python3 tests/test-mutations.py
 python3 tests/test-agent-harness.py
 python3 tests/test-agent-harness-operations.py
+python3 tests/test-verify-invariants.py
 python3 tests/test-hermes-skill.py
 python3 tests/test-session-registry.py
 python3 tests/test-turn-lock.py
