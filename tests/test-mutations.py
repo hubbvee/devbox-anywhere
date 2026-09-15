@@ -103,6 +103,10 @@ CASES = [
     ("worktree-postadd-ignore-failure", "scripts/devbox-worktree", 'exit "$hook_status"', 'true', ["python3", "tests/test-worktree-helper.py"], "a failing post-add hook must be surfaced"),
     ("runner-omit-operations", "tests/run.sh", "python3 tests/test-agent-harness-operations.py\n", "", ["python3", "tests/test-runner-inventory.py"], "runner_inventory_mismatch"),
     ("runner-omit-inventory", "tests/run.sh", "python3 tests/test-runner-inventory.py\n", "", ["python3", "tests/test-mutations.py"], "runner_inventory_guard_missing"),
+    ("relink-dropin-loading-removed", "scripts/devbox-relink", 'relink "$target" "$link"', ":", ["python3", "tests/test-relink-dropins.py"], "drop-in mytool relink missing"),
+    ("relink-missing-source-not-skipped", "scripts/devbox-relink", 'echo "  skip (missing source): $link -> $target" >&2\n          continue', 'echo "  skip (missing source): $link -> $target" >&2\n          :', ["python3", "tests/test-relink-dropins.py"], "never create a dangling link"),
+    ("relink-extra-field-guard-removed", "scripts/devbox-relink", 'if [ -z "$link" ] || [ -n "$extra" ]; then', 'if [ -z "$link" ]; then', ["python3", "tests/test-relink-dropins.py"], "never create a link at the truncated path"),
+    ("installer-backup-removed", "scripts/install-devbox", 'cp -p "$dst" "$bak"', ":", ["python3", "tests/test-install-preserve.py"], "expected exactly one backup"),
 ]
 
 for case in CASES:
