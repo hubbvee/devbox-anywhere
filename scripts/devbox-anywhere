@@ -70,12 +70,21 @@ fi
 """
 
 DAEMON_DECLARED_PROBE = r"""
-# daemon.declared probe: for each daemon declared in ~/.local/share/devbox-daemons.d/*.conf emit
-# a "<name>	<running|stopped>" line. Absent directory emits nothing, so the check is skipped
-# rather than failed. Running state is a detached tmux session (the default backend), which works
-# under dumb-init without systemd.
+# daemon.declared probe: emit "<name>	<running|stopped>" per declared daemon. Absent daemons.d
+# emits nothing, so the check is skipped rather than failed.
+#
+# Liveness delegates to `devbox-daemon status-all` when that helper is present -- it is the single,
+# backend-aware source of truth (a non-tmux backend is judged by that backend, never by a raw tmux
+# has-session). Only when devbox-daemon is absent (an install predating it) do we fall back to the
+# raw tmux check, so those installs keep working. status-all already prints the exact
+# <name>	tab	<running|stopped> contract this probe returns.
 dd="$HOME/.local/share/devbox-daemons.d"
 [ -d "$dd" ] || exit 0
+if command -v devbox-daemon >/dev/null 2>&1; then
+  devbox-daemon status-all
+  exit 0
+fi
+# Fallback (no devbox-daemon): raw tmux check of the default backend only.
 for c in "$dd"/*.conf; do
   [ -e "$c" ] || continue
   name=$(sed -n 's/^name[[:space:]]\{1,\}//p' "$c" | head -1)
@@ -282,6 +291,7 @@ def verify_report() -> dict[str, Any]:
             ("network.bindings", "Docker is missing"),
             ("storage.mounts", "Docker is missing"),
             ("helper.devbox", "Docker is missing"),
+            ("helper.devbox-daemon", "Docker is missing"),
             ("helper.devbox-relink", "Docker is missing"),
             ("helper.devbox-session", "Docker is missing"),
             ("helper.devbox-turn", "Docker is missing"),
@@ -340,7 +350,7 @@ def verify_report() -> dict[str, Any]:
             mounts_ok,
             "Docker mounts match fixed persistent paths" if mounts_ok else "Docker mounts differ from fixed persistent paths",
         ))
-        for helper in ("devbox", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"):
+        for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"):
             ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"])
             checks.append(check(f"helper.{helper}", ok, f"{helper} helper is executable" if ok else f"{helper} helper is unavailable"))
         http_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"])

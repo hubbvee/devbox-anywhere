@@ -234,7 +234,7 @@ fi
 "${compose[@]}" build --pull=false
 "${compose[@]}" up -d
 
-helpers="devbox devbox-relink devbox-session devbox-turn devbox-worktree"
+helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"
 # A3: preserve operator customization across upgrades (fixes D1). Constant-argv backup: a
 # differing on-box helper is copied to <helper>.pre-upgrade.<utc>.bak before overwrite, with a
 # machine-readable PRESERVED notice; an identical file is left untouched. For devbox-relink we
@@ -272,6 +272,9 @@ done
 # (mkdir -p is a no-op when present); the installer never writes into it.
 "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
   /usr/bin/mkdir -p -m 0700 /home/coder/.local/share/devbox-relink.d
+# C2: the declared-daemon drop-in dir, same 0700, never written into by the installer.
+"${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+  /usr/bin/mkdir -p -m 0700 /home/coder/.local/share/devbox-daemons.d
 
 # Build the readiness probe from the same helper list so it always matches what we installed.
 readiness='/usr/bin/tmux -V >/dev/null'

@@ -60,3 +60,12 @@ if [ -d "$dropin_dir" ]; then
     echo "  WARN: $dropin_dir is unreadable; skipping drop-ins" >&2
   fi
 fi
+
+# Declared daemons (C2): bring up anything declared in ~/.local/share/devbox-daemons.d/ after the
+# links are restored. This is the LAST step and is neutralized with `|| true`: devbox-relink runs
+# under `set -e`, and a daemon failure must NEVER be able to break symlink restoration. Hands-off
+# link recovery is the load-bearing behavior; the gateway is a convenience on top of it.
+if command -v devbox-daemon >/dev/null 2>&1; then
+  echo "starting declared daemons:"
+  devbox-daemon start-all || true
+fi
