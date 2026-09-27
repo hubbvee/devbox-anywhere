@@ -1,0 +1,26 @@
+# Devbox Anywhere relink drop-in: Muse Code (Meta terminal coding agent)
+#
+# Muse Code installs its binary to ~/.local/bin/muse, which is ALREADY on the persistent
+# mount, so the binary survives a container rebuild. Its user config and login token live
+# under ~/.config/muse/, which is NOT persistent -- without this drop-in you would have to
+# run `muse login` again after every rebuild.
+#
+# ONE-TIME SETUP (run once, inside the box, before relying on this drop-in):
+#   1. Install Muse Code and sign in once (see docs/14-muse-code.md).
+#   2. Move its config onto the persistent mount:
+#        mv ~/.config/muse ~/.local/share/muse-config
+#   3. Materialize this template into place, expanding $HOME to an absolute path (the loader
+#      reads literal paths, so copy it through envsubst -- a raw `cp` would leave $HOME literal):
+#        envsubst '$HOME' < templates/devbox-relink.d/20-muse.conf.example \
+#           > ~/.local/share/devbox-relink.d/20-muse.conf
+#      (No envsubst? `sed "s#\\$HOME#$HOME#g"` does the same.)
+#   4. Run devbox-relink once now; it also runs automatically on every boot.
+#
+# Format: one `target link` pair per line (same as any devbox-relink drop-in). Before the
+# one-time move the persistent source is absent and devbox-relink SKIPS this line safely --
+# no dangling ~/.config/muse link, never fatal -- so shipping it early is harmless.
+#
+# NOTE: verify with `muse` where its login token actually lives; if it is stored outside
+# ~/.config/muse (e.g. a separate credentials path), add that path as a second line here so
+# the login itself survives rebuilds. See docs/14 "Open questions / auth storage".
+$HOME/.local/share/muse-config $HOME/.config/muse
