@@ -101,11 +101,98 @@ case "$cmd" in
     printf 'session=%s\nwindow=%s\nworktree=%s\nbranch=%s\n' "$project" "$agent" "$m_worktree" "$m_branch"
     ;;
 
+  status)
+    # Git-convergence readout per agent (v1.7 Part A). Exact facts only: dirty, ahead/behind
+    # vs base, merged (branch is an ancestor of base), turn holder, reapable. Activity is Part B.
+    json=0
+    project=""
+    for a in "$@"; do
+      case "$a" in
+        --json) json=1 ;;
+        -*) die "unknown status option: $a" ;;
+        *) [ -z "$project" ] && project=$a || die "unexpected argument: $a" ;;
+      esac
+    done
+    [ -n "$project" ] || die "usage: devbox-session status <project> [--json]"
+    reg=$(registry_of "$project")
+    [ -f "$reg" ] || die "unknown project: $project"
+    base=${DEVBOX_STATUS_BASE:-}
+
+    # JSON string escaper (backslash, quote, control chars) — worktree paths/holders are the
+    # only interpolated values and are never trusted to be JSON-safe.
+    jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
+
+    turn_of() {
+      # holder name, or "free"; tolerate devbox-turn absent/erroring -> "unknown".
+      # Resolve devbox-turn beside this script first (helpers install together), then PATH.
+      _dt="$(dirname "$0")/devbox-turn"
+      [ -x "$_dt" ] || _dt=$(command -v devbox-turn 2>/dev/null) || { printf 'unknown'; return; }
+      [ -n "$_dt" ] || { printf 'unknown'; return; }
+      out=$(bash "$_dt" status "$1" 2>/dev/null) || { printf 'free'; return; }
+      case "$out" in
+        *held*by\ *) printf '%s' "$out" | sed -n 's/.* by \([^,]*\).*/\1/p' | head -n1 ;;
+        *free*) printf 'free' ;;
+        *) printf 'unknown' ;;
+      esac
+    }
+
+    emit_json=""
+    table=""
+    first=1
+    while IFS=$(printf '\t') read -r agent worktree branch rest; do
+      [ -n "${agent:-}" ] || continue
+      missing=false; dirty=false; ahead=0; behind=0; merged=false; turn="free"; reapable=false
+      if [ ! -d "$worktree" ]; then
+        missing=true
+      else
+        # base defaults: repo main, then master; fail closed only if none resolvable and none given
+        gitdir_repo=$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+        b=$base
+        if [ -z "$b" ]; then
+          if git -C "$worktree" rev-parse --verify -q main >/dev/null 2>&1; then b=main
+          elif git -C "$worktree" rev-parse --verify -q master >/dev/null 2>&1; then b=master
+          else die "cannot resolve base branch (no main/master); set DEVBOX_STATUS_BASE"; fi
+        fi
+        [ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] && dirty=true
+        counts=$(git -C "$worktree" rev-list --left-right --count "$b"...HEAD 2>/dev/null) || counts=""
+        if [ -n "$counts" ]; then
+          behind=$(printf '%s' "$counts" | awk '{print $1}')
+          ahead=$(printf '%s' "$counts" | awk '{print $2}')
+        fi
+        if git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi
+        turn=$(turn_of "$worktree")
+        if [ "$merged" = true ] && [ "$dirty" = false ] && [ "$turn" = free ]; then reapable=true; fi
+      fi
+
+      if [ "$json" = 1 ]; then
+        [ "$first" = 1 ] || emit_json="$emit_json,"
+        first=0
+        emit_json="$emit_json{\"agent\":\"$(jesc "$agent")\",\"worktree\":\"$(jesc "$worktree")\",\"branch\":\"$(jesc "$branch")\",\"missing\":$missing,\"dirty\":$dirty,\"ahead\":$ahead,\"behind\":$behind,\"merged\":$merged,\"turn\":\"$(jesc "$turn")\",\"reapable\":$reapable}"
+      else
+        if [ "$missing" = true ]; then
+          table="$table$(printf '%-16s %s\n' "$agent" "MISSING")"$'\n'
+        else
+          gs="clean"; [ "$dirty" = true ] && gs="dirty"; [ "$merged" = true ] && gs="merged"
+          reap=""; [ "$reapable" = true ] && reap="  (reapable)"
+          table="$table$(printf '%-16s %-8s +%s/-%s  turn:%-10s%s\n' "$agent" "$gs" "$ahead" "$behind" "$turn" "$reap")"$'\n'
+        fi
+      fi
+    done < "$reg"
+
+    if [ "$json" = 1 ]; then
+      printf '{"schema_version":1,"project":"%s","session":"%s","base":"%s","agents":[%s]}\n' \
+        "$(jesc "$project")" "$(jesc "$project")" "$(jesc "${base:-auto}")" "$emit_json"
+    else
+      printf 'project=%s session=%s base=%s\n' "$project" "$project" "${base:-auto}"
+      printf '%s' "$table"
+    fi
+    ;;
+
   -h|--help|help)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 
   *)
-    die "unknown command: $cmd (list|resolve)"
+    die "unknown command: $cmd (list|resolve|status)"
     ;;
 esac
