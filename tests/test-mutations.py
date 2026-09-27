@@ -105,6 +105,7 @@ CASES = [
     ("status-dirty-blind", "scripts/devbox-session", '[ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] && dirty=true', ':', ["python3", "tests/test-session-status.py"], "status_dirty_true"),
     ("status-merged-blind", "scripts/devbox-session", 'if git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', ':', ["python3", "tests/test-session-status.py"], "status_merged_true"),
     ("status-reapable-loosened", "scripts/devbox-session", 'if [ "$merged" = true ] && [ "$dirty" = false ] && [ "$turn" = free ]; then reapable=true; fi', 'reapable=true', ["python3", "tests/test-session-status.py"], "status_reapable_false_when_dirty"),
+    ("status-activity-fabricated", "scripts/devbox-session", '[ -n "$pcmd" ] || { printf \'unknown\'; return; }', ':', ["python3", "tests/test-session-status.py"], "act_unknown_on_empty_cmd"),
     ("runner-omit-operations", "tests/run.sh", "python3 tests/test-agent-harness-operations.py\n", "", ["python3", "tests/test-runner-inventory.py"], "runner_inventory_mismatch"),
     ("runner-omit-inventory", "tests/run.sh", "python3 tests/test-runner-inventory.py\n", "", ["python3", "tests/test-mutations.py"], "runner_inventory_guard_missing"),
     ("relink-dropin-loading-removed", "scripts/devbox-relink", 'relink "$target" "$link"', ":", ["python3", "tests/test-relink-dropins.py"], "drop-in mytool relink missing"),

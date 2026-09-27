@@ -24,6 +24,11 @@ provides only the box-side layer.
 - `devbox-session list | resolve <project> [agent]` — resolve project -> session -> agent
   (`session`/`window`/`worktree`/`branch`). Fails closed on unknown/off-convention/duplicate/
   malformed input.
+- `devbox-session status <project> [--json]` — agent board: exact git facts (dirty,
+  ahead/behind vs base, merged, turn holder, `reapable`) plus a LABELED activity heuristic
+  (`working|blocked|idle|unknown`; `--json` sets `activity_confidence:"heuristic"`). Base via
+  `DEVBOX_STATUS_BASE` else repo main/master. Unknown project fails closed; a vanished
+  worktree is `missing`, never a crash. Trust git/turn facts; don't gate on activity alone.
 - `devbox-worktree add|list|remove <project> <agent> [--force]` — create/list/tear down an
   agent's worktree + branch + window. `add` rolls back on failure; `remove` refuses a dirty
   worktree without `--force`.

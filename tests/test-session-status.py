@@ -39,11 +39,23 @@ def wt(*args: str, home, wt_root, repo) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["bash", str(WT_TOOL), *args], env=wt_env(home, wt_root, repo), capture_output=True, text=True)
 
 
-def status(*args: str, home, wt_root, repo, turn_state=None) -> subprocess.CompletedProcess[str]:
+def status(*args: str, home, wt_root, repo, turn_state=None, activity_cmd=None, stale=None) -> subprocess.CompletedProcess[str]:
     env = wt_env(home, wt_root, repo) | {"DEVBOX_STATUS_BASE": "main"}
     if turn_state is not None:
         env["DEVBOX_TURN_STATE"] = str(turn_state)
+    if activity_cmd is not None:
+        env["DEVBOX_STATUS_ACTIVITY_CMD"] = str(activity_cmd)
+    if stale is not None:
+        env["DEVBOX_STATUS_STALE"] = str(stale)
     return subprocess.run(["bash", str(TOOL), "status", *args], env=env, capture_output=True, text=True)
+
+
+def write_stub(path: pathlib.Path, body: str) -> pathlib.Path:
+    # An activity probe: invoked as `$CMD <session> <window>`, prints one line
+    # "<cmd>\t<age_seconds>\t<last_line>" (empty/nonzero => unknown).
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
 
 
 assert TOOL.is_file()
@@ -122,6 +134,62 @@ h = status("webapp", home=home, wt_root=wt_root, repo=repo, turn_state=turn_stat
 assert h.returncode == 0, h.stderr
 assert "webapp-api" in h.stdout and "webapp-cli" in h.stdout, h.stdout
 assert "reapable" in h.stdout.lower(), "table should flag the reapable agent"
+
+# --- Part B: activity heuristic (injectable probe) ---
+# working = a non-shell foreground command; idle = a shell prompt; blocked = a known
+# waiting-prompt tail that has stalled; unknown = probe unavailable/errors (never faked).
+stub = write_stub(base / "act_ok.sh", (
+    'case "$2" in\n'
+    '  webapp-api) printf "node\\t3\\t\\n" ;;\n'          # non-shell, recent -> working
+    '  webapp-web) printf "bash\\t500\\t$ \\n" ;;\n'       # shell prompt -> idle
+    '  webapp-cli) printf "bash\\t500\\t$ \\n" ;;\n'       # shell prompt -> idle
+    '  *) exit 1 ;;\n'
+    'esac\n'
+))
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state, activity_cmd=stub)
+assert r.returncode == 0, r.stderr
+doc = json.loads(r.stdout)
+ag = {a["agent"]: a for a in doc["agents"]}
+assert ag["webapp-api"]["activity"] == "working", "act_working"
+assert ag["webapp-web"]["activity"] == "idle", "act_idle"
+assert ag["webapp-cli"]["activity"] == "idle", ag["webapp-cli"]
+# Activity must be explicitly labeled a heuristic, never presented as exact fact.
+assert doc.get("activity_confidence") == "heuristic", "act_confidence_label"
+
+# blocked: a waiting prompt that has stalled (age >= stale threshold).
+stub_b = write_stub(base / "act_blocked.sh", (
+    'case "$2" in\n'
+    '  webapp-api) printf "bash\\t120\\tDo you want to proceed? (y/n) \\n" ;;\n'
+    '  *) printf "bash\\t500\\t$ \\n" ;;\n'
+    'esac\n'
+))
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state, activity_cmd=stub_b, stale=30)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-api"]["activity"] == "blocked", "act_blocked"
+
+# probe errors -> unknown, NEVER fabricated as working.
+stub_err = write_stub(base / "act_err.sh", "exit 1\n")
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state, activity_cmd=stub_err)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-api"]["activity"] == "unknown", "act_unknown_on_error"
+
+# probe prints nothing -> unknown.
+stub_empty = write_stub(base / "act_empty.sh", "exit 0\n")
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state, activity_cmd=stub_empty)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-api"]["activity"] == "unknown", "act_unknown_on_empty"
+
+# probe returns a line with an EMPTY command field (leading tab) -> unknown, not fabricated working.
+stub_nocmd = write_stub(base / "act_nocmd.sh", 'printf "\\t5\\t$ \\n"\n')
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state, activity_cmd=stub_nocmd)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-api"]["activity"] == "unknown", "act_unknown_on_empty_cmd"
+
+# no probe configured at all -> must not crash, activity is a valid label (unknown when no tmux).
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+assert r.returncode == 0, r.stderr
+for a in json.loads(r.stdout)["agents"]:
+    assert a["activity"] in {"working", "idle", "blocked", "unknown"}, a
 
 # --- fail closed: unknown project ---
 assert status("ghost", "--json", home=home, wt_root=wt_root, repo=repo).returncode != 0

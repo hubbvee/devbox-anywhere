@@ -97,6 +97,40 @@ devbox-session list                        # confirm both agents
 devbox-worktree remove webapp webapp-api # clean removal once merged (refuses dirty WIP)
 ```
 
+## Agent status board
+
+`devbox-session status <project>` gives an at-a-glance readout of every agent on a project —
+which are working, and which are safe to clean up. (The idea is inspired by herdr's
+"agents at a glance"; this is a native reimplementation on tmux + git, not a dependency, and
+a full cockpit TUI is out of scope — run herdr on top if you want one.)
+
+```
+$ devbox-session status webapp
+project=webapp session=webapp base=main  (activity is a heuristic)
+webapp-api       dirty    +3/-0  turn:alice      working
+webapp-web       clean    +1/-0  turn:free       idle
+webapp-cli       merged   +0/-0  turn:free       idle       (reapable)
+```
+
+Two kinds of signal, deliberately distinguished:
+
+- **Exact git/turn facts** — `clean|dirty`, `+ahead/-behind` vs the base branch, `merged`
+  (the branch is an ancestor of base), and the `devbox-turn` holder. These are computed from
+  git and the lock; trust them. `(reapable)` = `merged && clean && turn free` — safe to remove.
+- **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the tmux pane
+  (`working` = a non-shell foreground command; `idle` = a shell prompt; `blocked` = a known
+  waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). When the
+  pane can't be read it is `unknown` — never guessed. `--json` marks this with
+  `"activity_confidence":"heuristic"`. Do not gate irreversible actions on activity alone.
+
+`--json` emits a schema-versioned document (`schema_version: 1`) with one object per agent;
+values are JSON-escaped and no secrets appear. The base branch is `DEVBOX_STATUS_BASE`, else
+the repo's `main` then `master`. Unknown project fails closed; a worktree that has vanished
+from disk is reported `"missing": true`, never a crash.
+
+**Reap workflow:** an agent shown `(reapable)` is merged, clean, and unheld — tear it down with
+`devbox-worktree remove <project> <agent>` (still refuses a dirty tree without `--force`).
+
 ## Dependency policy
 
 A new worktree is a **fresh checkout with no installed dependencies** — `node_modules/`, a

@@ -136,12 +136,53 @@ case "$cmd" in
       esac
     }
 
+    # ACTIVITY (HEURISTIC, not a fact): classify a pane as working|idle|blocked, else unknown.
+    # A probe prints one TAB line "<foreground_cmd>\t<age_seconds>\t<last_line>" for
+    # "<session> <window>"; empty output or a nonzero exit => unknown (NEVER fabricated as
+    # working). Default probe uses tmux; overridable via DEVBOX_STATUS_ACTIVITY_CMD for tests
+    # and non-tmux setups. Stall threshold DEVBOX_STATUS_STALE seconds (default 60).
+    stale_secs=${DEVBOX_STATUS_STALE:-60}
+    activity_probe=${DEVBOX_STATUS_ACTIVITY_CMD:-}
+    if [ -z "$activity_probe" ] && command -v tmux >/dev/null 2>&1; then
+      activity_probe="__tmux__"
+    fi
+    activity_of() {
+      # args: <session> <window>
+      [ -n "$activity_probe" ] || { printf 'unknown'; return; }
+      if [ "$activity_probe" = "__tmux__" ]; then
+        tmux has-session -t "=$1" 2>/dev/null || { printf 'unknown'; return; }
+        cmd=$(tmux display-message -p -t "=$1:$2" '#{pane_current_command}' 2>/dev/null) || { printf 'unknown'; return; }
+        awin=$(tmux display-message -p -t "=$1:$2" '#{window_activity}' 2>/dev/null)
+        now=$(date +%s 2>/dev/null)
+        age=""; case "$awin$now" in *[!0-9]*) : ;; *) [ -n "$awin" ] && [ -n "$now" ] && age=$((now - awin)) ;; esac
+        last=$(tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n '' | tail -n1 | cut -d: -f2-)
+        line="$cmd	${age:-}	$last"
+      else
+        line=$("$activity_probe" "$1" "$2" 2>/dev/null) || { printf 'unknown'; return; }
+      fi
+      [ -n "$line" ] || { printf 'unknown'; return; }
+      pcmd=$(printf '%s' "$line" | cut -f1)
+      page=$(printf '%s' "$line" | cut -f2)
+      plast=$(printf '%s' "$line" | cut -f3-)
+      [ -n "$pcmd" ] || { printf 'unknown'; return; }
+      # blocked: last line looks like a program waiting for input AND it has stalled.
+      case "$plast" in
+        *"(y/n)"*|*"(yes/no)"*|*"[Y/n]"*|*"[y/N]"*|*"Password:"*|*"password:"*|*"? "*|*"?)"*)
+          case "$page" in ''|*[!0-9]*) : ;; *) [ "$page" -ge "$stale_secs" ] && { printf 'blocked'; return; } ;; esac ;;
+      esac
+      # working: a non-shell foreground command.
+      case "$pcmd" in
+        sh|bash|dash|zsh|-sh|-bash|-zsh|fish|tmux) printf 'idle' ;;
+        *) printf 'working' ;;
+      esac
+    }
+
     emit_json=""
     table=""
     first=1
     while IFS=$(printf '\t') read -r agent worktree branch rest; do
       [ -n "${agent:-}" ] || continue
-      missing=false; dirty=false; ahead=0; behind=0; merged=false; turn="free"; reapable=false
+      missing=false; dirty=false; ahead=0; behind=0; merged=false; turn="free"; reapable=false; activity=unknown
       if [ ! -d "$worktree" ]; then
         missing=true
       else
@@ -162,28 +203,30 @@ case "$cmd" in
         if git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi
         turn=$(turn_of "$worktree")
         if [ "$merged" = true ] && [ "$dirty" = false ] && [ "$turn" = free ]; then reapable=true; fi
+        # ACTIVITY is a HEURISTIC (session==project, window==agent); never blocks the git facts.
+        activity=$(activity_of "$project" "$agent")
       fi
 
       if [ "$json" = 1 ]; then
         [ "$first" = 1 ] || emit_json="$emit_json,"
         first=0
-        emit_json="$emit_json{\"agent\":\"$(jesc "$agent")\",\"worktree\":\"$(jesc "$worktree")\",\"branch\":\"$(jesc "$branch")\",\"missing\":$missing,\"dirty\":$dirty,\"ahead\":$ahead,\"behind\":$behind,\"merged\":$merged,\"turn\":\"$(jesc "$turn")\",\"reapable\":$reapable}"
+        emit_json="$emit_json{\"agent\":\"$(jesc "$agent")\",\"worktree\":\"$(jesc "$worktree")\",\"branch\":\"$(jesc "$branch")\",\"missing\":$missing,\"dirty\":$dirty,\"ahead\":$ahead,\"behind\":$behind,\"merged\":$merged,\"turn\":\"$(jesc "$turn")\",\"reapable\":$reapable,\"activity\":\"$(jesc "$activity")\"}"
       else
         if [ "$missing" = true ]; then
           table="$table$(printf '%-16s %s\n' "$agent" "MISSING")"$'\n'
         else
           gs="clean"; [ "$dirty" = true ] && gs="dirty"; [ "$merged" = true ] && gs="merged"
           reap=""; [ "$reapable" = true ] && reap="  (reapable)"
-          table="$table$(printf '%-16s %-8s +%s/-%s  turn:%-10s%s\n' "$agent" "$gs" "$ahead" "$behind" "$turn" "$reap")"$'\n'
+          table="$table$(printf '%-16s %-8s +%s/-%s  turn:%-10s %-8s%s\n' "$agent" "$gs" "$ahead" "$behind" "$turn" "$activity" "$reap")"$'\n'
         fi
       fi
     done < "$reg"
 
     if [ "$json" = 1 ]; then
-      printf '{"schema_version":1,"project":"%s","session":"%s","base":"%s","agents":[%s]}\n' \
+      printf '{"schema_version":1,"project":"%s","session":"%s","base":"%s","activity_confidence":"heuristic","agents":[%s]}\n' \
         "$(jesc "$project")" "$(jesc "$project")" "$(jesc "${base:-auto}")" "$emit_json"
     else
-      printf 'project=%s session=%s base=%s\n' "$project" "$project" "${base:-auto}"
+      printf 'project=%s session=%s base=%s  (activity is a heuristic)\n' "$project" "$project" "${base:-auto}"
       printf '%s' "$table"
     fi
     ;;
