@@ -41,20 +41,40 @@ def warn_check(check_id: str, ok: bool, summary: str) -> dict[str, str]:
 # discipline as the installer preservation blob). Output is machine-parsed and carries only link
 # paths / daemon names -- never environment values or secrets. POSIX sh only (container may be dash).
 RELINK_TARGETS_PROBE = r"""
-# relink.targets probe: emit one DANGLING line per managed symlink that is absent or does not
-# resolve; healthy links emit nothing. Sources are the shipped relink lines in the on-box
-# devbox-relink plus every ~/.local/share/devbox-relink.d/*.conf pair -- the same set the helper
-# manages. eval expands $HOME inside quoted paths exactly as the helper would.
+# relink.targets probe: emit one DANGLING line per managed symlink that is genuinely broken.
+# Two classes of managed links are judged by DIFFERENT rules because they behave differently.
+#
+# SHIPPED defaults -- the top-level `relink "$HOME/..." "$HOME/..."` lines in devbox-relink
+# (terminfo, gh-config, gitconfig, secrets). These are WRITE-THROUGH: relink creates the symlink
+# before the source exists, and the tool (git config, gh auth login, ...) writes THROUGH it into
+# the persisted ~/.local/share store on first use. So a shipped link whose source does not exist
+# yet is HEALTHY on a fresh box, not dangling. The only broken state is a shipped path that
+# EXISTS but is NOT a symlink -- then writes won't survive a rebuild.
+#   - GUARD 1b (parser): match ONLY `relink "$HOME/<t>" "$HOME/<l>"` with literal $HOME/ args at
+#     column zero. The drop-in loader's own indented `relink "$target" "$link"` call is neither
+#     column-zero nor $HOME/-rooted, so it never matches; if a loosened grep ever lets a non
+#     $HOME/-rooted line through, the case guard below surfaces it loudly rather than emitting a
+#     silent bogus pair. This kills the old `"$link" -> "$target"` leak.
+#   - GUARD 1a (write-through): flag a shipped link only when it EXISTS and is NOT a symlink.
+#
+# DROP-IN links -- every ~/.local/share/devbox-relink.d/*.conf pair. The loader SKIPS a missing
+# source (never creates the link), so a drop-in link that exists but does not resolve means the
+# source was removed AFTER the link was made: a genuine dangling target (the ~/.hermes case
+# this check exists for). Flag any drop-in link that is absent, not a symlink, or does not resolve.
 rl="$HOME/.local/bin/devbox-relink"
 dd="$HOME/.local/share/devbox-relink.d"
-report_link() {
-  t=$(eval printf %s "$1"); l=$(eval printf %s "$2")
-  if [ ! -L "$l" ] || [ ! -e "$l" ]; then printf 'DANGLING %s -> %s
-' "$l" "$t"; fi
-}
 if [ -f "$rl" ]; then
-  grep -E '^[[:space:]]*relink ' "$rl" | while read -r _kw target link _rest; do
-    [ -n "$target" ] && [ -n "$link" ] && report_link "$target" "$link"
+  grep -E '^relink[[:space:]]+"\$HOME/[^"]*"[[:space:]]+"\$HOME/[^"]*"' "$rl" | while IFS= read -r line; do
+    rest=$(printf '%s\n' "$line" | sed -n 's/^[[:space:]]*relink[[:space:]]\{1,\}\(.*\)/\1/p')
+    target=$(printf '%s\n' "$rest" | sed -n 's/^"\([^"]*\)".*/\1/p')
+    link=$(printf '%s\n' "$rest" | sed -n 's/^"[^"]*"[[:space:]]\{1,\}"\([^"]*\)".*/\1/p')
+    # GUARD 1b: a managed shipped pair is exactly two $HOME/-rooted quoted paths. Anything else
+    # (e.g. the loader's `relink "$target" "$link"`) is surfaced, never parsed as a real link.
+    case "$target" in '$HOME/'*) ;; *) printf 'DANGLING %s -> %s\n' "$link" "$target"; continue ;; esac
+    case "$link"   in '$HOME/'*) ;; *) printf 'DANGLING %s -> %s\n' "$link" "$target"; continue ;; esac
+    t=$(eval printf %s "\"$target\""); l=$(eval printf %s "\"$link\"")
+    # GUARD 1a: write-through -- only a path that EXISTS and is NOT a symlink is broken.
+    if [ -e "$l" ] && [ ! -L "$l" ]; then printf 'DANGLING %s -> %s\n' "$l" "$t"; fi
   done
 fi
 if [ -d "$dd" ]; then
@@ -63,7 +83,8 @@ if [ -d "$dd" ]; then
     while read -r target link extra || [ -n "$target" ]; do
       case "$target" in ''|\#*) continue ;; esac
       [ -n "$link" ] && [ -z "$extra" ] || continue
-      report_link "$target" "$link"
+      t=$(eval printf %s "\"$target\""); l=$(eval printf %s "\"$link\"")
+      if [ ! -L "$l" ] || [ ! -e "$l" ]; then printf 'DANGLING %s -> %s\n' "$l" "$t"; fi
     done < "$c"
   done
 fi
