@@ -113,6 +113,7 @@ CASES = [
     ("relink-probe-loader-line-reparsed", "scripts/devbox-anywhere", 'grep -E \'^relink[[:space:]]+"\\$HOME/[^"]*"[[:space:]]+"\\$HOME/[^"]*"\'', "grep -E '^[[:space:]]*relink '", ["python3", "tests/test-relink-targets-probe.py"], "must not parse the loader call"),
     ("relink-missing-dir-source-mkdir", "scripts/devbox-relink", 'mkdir -p "$HOME/.local/share/gh-config" "$HOME/.local/share/terminfo"', ':', ["python3", "tests/test-relink-targets-probe.py"], "must land in the persisted store"),
     ("relink-probe-absent-link-passes", "scripts/devbox-anywhere", 'if [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', 'if [ -e "$l" ] && [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', ["python3", "tests/test-relink-targets-probe.py"], "an absent shipped link must be flagged"),
+    ("sshd-penalty-exempt-removed", "stack/config/devbox-sshd.conf", 'PerSourcePenaltyExemptList 127.0.0.1,::1', '# PerSourcePenaltyExemptList 127.0.0.1,::1', ["python3", "tests/test-ssh-penalty-exempt.py"], "PerSourcePenaltyExemptList"),
 ]
 
 for case in CASES:
