@@ -119,4 +119,45 @@ assert any(str(home / ".hermes") in p for p in pairs), \
 assert not any(".terminfo" in p or ".config/gh" in p or ".gitconfig" in p for p in pairs), \
     f"shipped write-through defaults must not be flagged alongside a real dangling drop-in: {pairs}"
 
+# --- 2a: a DIRECTORY source (gh-config, terminfo) must exist so a tool can write through it ------
+# gh / terminfo create their config via a dir-create at the link path (Go's os.MkdirAll, which
+# python os.makedirs reproduces). If the source dir does not exist the link is dangling, and the
+# dir-create fails with "File exists" -- so `gh auth login` cannot persist its token on a fresh
+# box (docs/06 step 1). devbox-relink must pre-create the DIRECTORY sources before linking.
+home = make_home()
+run_relink(home)
+gh_link = home / ".config/gh"
+assert gh_link.is_symlink(), "precondition: gh-config link must be created"
+# reproduce `gh config set`: makedirs through the link, then write the config into it. On a
+# dangling link this raises FileExistsError (Go's os.MkdirAll behaves identically) -> the token
+# can't persist; catch it and fail as a named assertion so the guard is mutation-detectable.
+wrote_through = False
+try:
+    os.makedirs(gh_link, exist_ok=True)
+    (gh_link / "config.yml").write_text("editor: vi\n")
+    wrote_through = (home / ".local/share/gh-config/config.yml").exists()
+except OSError:
+    wrote_through = False
+assert wrote_through, \
+    "a dir-create through ~/.config/gh must land in the persisted store (gh auth login must persist)"
+# terminfo is the same directory-source shape.
+assert (home / ".local/share/terminfo").is_dir(), \
+    "the terminfo directory source must be pre-created so relink points at a real dir"
+# a FILE source (gitconfig) must NOT be pre-created as a directory (git writes through its lockfile).
+assert not (home / ".local/share/gitconfig").is_dir(), \
+    "gitconfig is a file source; it must not be pre-created as a directory"
+
+# --- 2b: an ABSENT shipped link is NOT healthy (relink always creates every shipped link) --------
+# "absent" only happens when relink never ran after a rebuild -- never a healthy state for a
+# shipped default. Removing ~/.terminfo must flag it; a dangling (source-less) link stays healthy.
+home = make_home()
+run_relink(home)
+(home / ".terminfo").unlink()  # simulate "relink never restored this link"
+pairs = run_probe(home)
+assert any(str(home / ".terminfo") in p for p in pairs), \
+    f"an absent shipped link must be flagged (relink always creates it): {pairs}"
+# the OTHER shipped links (dangling but present) must stay healthy -- no fresh-box noise.
+assert not any(".config/gh" in p or ".gitconfig" in p for p in pairs), \
+    f"a dangling-but-present shipped link must stay healthy (no fresh-box noise): {pairs}"
+
 print("relink_targets_probe=PASS")

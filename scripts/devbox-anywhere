@@ -55,7 +55,8 @@ RELINK_TARGETS_PROBE = r"""
 #     column-zero nor $HOME/-rooted, so it never matches; if a loosened grep ever lets a non
 #     $HOME/-rooted line through, the case guard below surfaces it loudly rather than emitting a
 #     silent bogus pair. This kills the old `"$link" -> "$target"` leak.
-#   - GUARD 1a (write-through): flag a shipped link only when it EXISTS and is NOT a symlink.
+#   - GUARD 1a: flag a shipped link that is ABSENT (relink never ran) or exists but is NOT a
+#     symlink; a dangling symlink (source not yet created) stays healthy (write-through).
 #
 # DROP-IN links -- every ~/.local/share/devbox-relink.d/*.conf pair. The loader SKIPS a missing
 # source (never creates the link), so a drop-in link that exists but does not resolve means the
@@ -73,8 +74,10 @@ if [ -f "$rl" ]; then
     case "$target" in '$HOME/'*) ;; *) printf 'DANGLING %s -> %s\n' "$link" "$target"; continue ;; esac
     case "$link"   in '$HOME/'*) ;; *) printf 'DANGLING %s -> %s\n' "$link" "$target"; continue ;; esac
     t=$(eval printf %s "\"$target\""); l=$(eval printf %s "\"$link\"")
-    # GUARD 1a: write-through -- only a path that EXISTS and is NOT a symlink is broken.
-    if [ -e "$l" ] && [ ! -L "$l" ]; then printf 'DANGLING %s -> %s\n' "$l" "$t"; fi
+    # GUARD 1a: relink ALWAYS creates every shipped link, so an ABSENT link (relink never ran)
+    # or a path that exists but is NOT a symlink (writes won't persist) is broken. A dangling
+    # symlink (source not created yet) stays healthy -- that is the write-through fresh-box state.
+    if [ ! -L "$l" ]; then printf 'DANGLING %s -> %s\n' "$l" "$t"; fi
   done
 fi
 if [ -d "$dd" ]; then

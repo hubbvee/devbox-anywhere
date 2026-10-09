@@ -109,8 +109,10 @@ CASES = [
     ("relink-extra-field-guard-removed", "scripts/devbox-relink", 'if [ -z "$link" ] || [ -n "$extra" ]; then', 'if [ -z "$link" ]; then', ["python3", "tests/test-relink-dropins.py"], "never create a link at the truncated path"),
     ("installer-backup-removed", "scripts/install-devbox", 'cp -p "$dst" "$bak"', ":", ["python3", "tests/test-install-preserve.py"], "expected exactly one backup"),
     ("relink-targets-ignores-dangling", "scripts/devbox-anywhere", "            if dangling:", "            if False:", ["python3", "tests/test-verify-invariants.py"], "must be WARN"),
-    ("relink-probe-writethrough-regressed", "scripts/devbox-anywhere", 'if [ -e "$l" ] && [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', 'if [ ! -L "$l" ] || [ ! -e "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', ["python3", "tests/test-relink-targets-probe.py"], "fresh box must report no dangling targets"),
+    ("relink-probe-writethrough-regressed", "scripts/devbox-anywhere", 'if [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', 'if [ ! -L "$l" ] || [ ! -e "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', ["python3", "tests/test-relink-targets-probe.py"], "fresh box must report no dangling targets"),
     ("relink-probe-loader-line-reparsed", "scripts/devbox-anywhere", 'grep -E \'^relink[[:space:]]+"\\$HOME/[^"]*"[[:space:]]+"\\$HOME/[^"]*"\'', "grep -E '^[[:space:]]*relink '", ["python3", "tests/test-relink-targets-probe.py"], "must not parse the loader call"),
+    ("relink-missing-dir-source-mkdir", "scripts/devbox-relink", 'mkdir -p "$HOME/.local/share/gh-config" "$HOME/.local/share/terminfo"', ':', ["python3", "tests/test-relink-targets-probe.py"], "must land in the persisted store"),
+    ("relink-probe-absent-link-passes", "scripts/devbox-anywhere", 'if [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', 'if [ -e "$l" ] && [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', ["python3", "tests/test-relink-targets-probe.py"], "an absent shipped link must be flagged"),
 ]
 
 for case in CASES:
