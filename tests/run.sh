@@ -18,6 +18,7 @@ python3 tests/test-hermes-skill.py
 python3 tests/test-session-registry.py
 python3 tests/test-session-status.py
 python3 tests/test-session-activity-tmux.py
+python3 tests/test-session-activity-faketmux.py
 python3 tests/test-turn-lock.py
 python3 tests/test-worktree-helper.py
 python3 tests/test-relink-dropins.py
