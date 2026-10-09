@@ -120,10 +120,21 @@ Two kinds of signal, deliberately distinguished:
   (the branch is an ancestor of base **and has moved past its fork point**), `new` (the
   branch still sits exactly where it was forked — no commits of its own yet), and the
   `devbox-turn` holder. These are computed from git and the lock; trust them. The state
-  column shows every fact that applies, so a merged branch with uncommitted changes reads
-  `merged+dirty` rather than hiding the dirt. `(reapable)` = `merged && clean && turn free
-  && activity != working` — safe to remove. A `new` branch is **never** `merged` or
-  `reapable`, so a just-created (possibly live) agent is never flagged for cleanup.
+  column shows every fact that applies, so dirt is never hidden: a fresh branch with
+  uncommitted changes reads `new+dirty` and a merged one reads `merged+dirty`. `(reapable)`
+  = `merged && clean && turn free && activity != working` — safe to remove. A `new` branch
+  is **never** `merged` or `reapable`, so a just-created (possibly live) agent is never
+  flagged for cleanup.
+
+  How `new` is detected: for a worktree created by this version, `devbox-worktree` records
+  the fork point (the base tip at creation) as a 4th registry column, and `new` means
+  `HEAD == fork`. For a **legacy 3-column registry** written before the upgrade, the fork
+  column is absent, so status falls back to the branch reflog: a branch whose only reflog
+  entry is its creation (`branch: Created from …`) has no commits of its own and is `new`.
+  If the reflog is unreadable (disabled, or pruned away), newness can't be determined — the
+  agent is then **never** reported `reapable`, erring toward keeping it rather than reaping a
+  branch we can't judge. New worktrees get the fork column automatically; no migration of an
+  existing registry is required.
 - **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the tmux pane
   (`working` = a non-shell foreground command; `idle` = a shell prompt; `blocked` = a known
   waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). When the

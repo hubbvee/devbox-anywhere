@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Contract for `devbox-session status <project> [--json]` (v1.7 Part A: git convergence).
+"""Contract for `devbox-session status <project> [--json]` (exact git-convergence facts).
 
 Exact facts per agent: dirty, ahead/behind vs base, merged (branch is ancestor of base),
 turn holder, and reapable = merged && !dirty && turn free. Fixture-driven with a real git
-repo + worktrees; no live tmux (activity is Part B). Fails closed on unknown project; a
-registered worktree gone from disk is reported `missing`, never a crash.
+repo + worktrees; no live tmux (activity classification is covered separately). Fails closed
+on unknown project; a registered worktree gone from disk is reported `missing`, never a crash.
 """
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ assert h.returncode == 0, h.stderr
 assert "webapp-api" in h.stdout and "webapp-cli" in h.stdout, h.stdout
 assert "reapable" in h.stdout.lower(), "table should flag the reapable agent"
 
-# --- Part B: activity heuristic (injectable probe) ---
+# --- activity heuristic (injectable probe) ---
 # working = a non-shell foreground command; idle = a shell prompt; blocked = a known
 # waiting-prompt tail that has stalled; unknown = probe unavailable/errors (never faked).
 stub = write_stub(base / "act_ok.sh", (
@@ -248,5 +248,54 @@ ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
 assert ag["webapp-cli"]["merged"] is True and ag["webapp-cli"]["dirty"] is True, ag["webapp-cli"]
 h = status("webapp", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
 assert "merged+dirty" in h.stdout, "table must show merged+dirty, not hide dirty under merged: " + h.stdout
+
+# --- A fresh agent with an uncommitted file is new+dirty, never just `new` ---
+# `new` precedence must not swallow dirt, same rule as merged+dirty: dirty is never hidden.
+(wt_root / "webapp-fresh" / "scratch.txt").write_text("uncommitted\n")
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-fresh"]["new"] is True and ag["webapp-fresh"]["dirty"] is True, ag["webapp-fresh"]
+assert ag["webapp-fresh"]["reapable"] is False, "new_dirty_not_reapable"
+h = status("webapp", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+assert "new+dirty" in h.stdout, "table must show new+dirty, not hide dirty under new: " + h.stdout
+
+# --- Legacy 3-column registry rows (created before the fork-SHA column existed) ---
+# Every existing user's registry is 3-column; status must still tell a fresh agent from a
+# merged one via the branch reflog, so the reap workflow can never delete a never-started agent.
+lbase = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-legacy-"))
+lrepo = lbase / "repo"; lrepo.mkdir()
+git("init", "-q", "-b", "main", cwd=lrepo)
+git("config", "user.email", "t@e", cwd=lrepo)
+git("config", "user.name", "t", cwd=lrepo)
+(lrepo / "README.md").write_text("seed\n")
+git("add", "README.md", cwd=lrepo)
+git("commit", "-q", "-m", "seed", cwd=lrepo)
+lhome = lbase / "sessions"; lhome.mkdir()
+lwt_root = lbase / "worktrees"
+lturn = lbase / "turn"
+# create two agents the normal way, then STRIP the 4th column to emulate a pre-upgrade registry
+for a in ("legacy-fresh", "legacy-done"):
+    rr = wt("add", "legacy", a, home=lhome, wt_root=lwt_root, repo=lrepo)
+    assert rr.returncode == 0, rr.stderr
+done = lwt_root / "legacy-done"
+(done / "d.txt").write_text("done\n")
+git("add", "d.txt", cwd=done)
+git("commit", "-q", "-m", "legacy work", cwd=done)
+git("merge", "--no-ff", "-m", "merge legacy-done", "agent/legacy-done", cwd=lrepo)
+reg = lhome / "legacy.tsv"
+stripped = "\n".join("\t".join(line.split("\t")[:3]) for line in reg.read_text().splitlines() if line) + "\n"
+reg.write_text(stripped)
+assert all(len(l.split("\t")) == 3 for l in reg.read_text().splitlines() if l), "registry must be 3-column"
+r = status("legacy", "--json", home=lhome, wt_root=lwt_root, repo=lrepo, turn_state=lturn)
+assert r.returncode == 0, r.stderr
+lag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+# fresh legacy agent (only its creation reflog entry): new, never merged, never reapable
+assert lag["legacy-fresh"]["new"] is True, "legacy_fresh_is_new"
+assert lag["legacy-fresh"]["merged"] is False, "legacy_fresh_not_merged"
+assert lag["legacy-fresh"]["reapable"] is False, "legacy_fresh_not_reapable"
+# genuinely merged legacy agent (has its own commit): not new, merged, reapable
+assert lag["legacy-done"]["new"] is False, "legacy_done_not_new"
+assert lag["legacy-done"]["merged"] is True and lag["legacy-done"]["reapable"] is True, "legacy_done_reapable"
+shutil.rmtree(lbase, ignore_errors=True)
 
 print("session_status=PASS")

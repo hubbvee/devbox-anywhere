@@ -17,7 +17,7 @@
 #   devbox-session resolve <project> <agent>  print session/window/worktree/branch
 #   devbox-session status <project> [--json]  per-agent git/turn facts + activity heuristic
 #
-# status state column: new|clean|dirty|merged|merged+dirty, plus (reapable) when
+# status state column: new|new+dirty|clean|dirty|merged|merged+dirty, plus (reapable) when
 # merged && clean && turn free && not working. Activity (working|idle|blocked|unknown) is a
 # HEURISTIC: "working" = any non-shell foreground process, so an agent CLI idle at its own
 # prompt reads "working" (it means "a CLI is open here", not "actively producing output").
@@ -211,17 +211,35 @@ case "$cmd" in
         fi
         # new: the branch still sits exactly at its fork point -> no commits of its own yet.
         # A fresh branch is trivially an ancestor of base, so we must NOT call that "merged":
-        # doing so made every just-created (possibly live) agent reapable. Needs the fork SHA
-        # recorded by devbox-worktree (4th column); a legacy row without it can't be "new".
+        # doing so made every just-created (possibly live) agent reapable.
+        #   - 4-column rows: compare HEAD to the fork SHA recorded by devbox-worktree.
+        #   - legacy 3-column rows (created before the upgrade): fall back to the branch reflog.
+        #     A branch with only its creation entry ("Created from ...") has no commits of its
+        #     own -> new. If the reflog is unreadable we cannot tell, so newness_known stays
+        #     false and the agent is never reapable (fail safe: never reap what we can't judge).
         tip=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || tip=""
-        if [ -n "$fork" ] && [ -n "$tip" ] && [ "$tip" = "$fork" ]; then new=true; fi
+        newness_known=false
+        if [ -n "$fork" ]; then
+          newness_known=true
+          if [ -n "$tip" ] && [ "$tip" = "$fork" ]; then new=true; fi
+        else
+          rlog=$(git -C "$worktree" reflog show --format=%gs "$branch" 2>/dev/null) || rlog=""
+          if [ -n "$rlog" ]; then
+            newness_known=true
+            nlines=$(printf '%s\n' "$rlog" | grep -c .)
+            oldest=$(printf '%s\n' "$rlog" | grep . | tail -n1)
+            case "$oldest" in
+              *"Created from"*) [ "$nlines" -eq 1 ] && new=true ;;
+            esac
+          fi
+        fi
         # merged: an ancestor of base AND it has moved past its fork point (real history merged in).
         if [ "$new" = false ] && git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi
         turn=$(turn_of "$worktree")
         # ACTIVITY is a HEURISTIC (session==project, window==agent); never blocks the git facts.
         # Computed before reapable so an actively-working agent is never flagged reapable.
         activity=$(activity_of "$project" "$agent")
-        if [ "$merged" = true ] && [ "$dirty" = false ] && [ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi
+        if [ "$merged" = true ] && [ "$newness_known" = true ] && [ "$dirty" = false ] && [ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi
       fi
 
       if [ "$json" = 1 ]; then
@@ -232,8 +250,9 @@ case "$cmd" in
         if [ "$missing" = true ]; then
           table="$table$(printf '%-16s %s\n' "$agent" "MISSING")"$'\n'
         else
-          # Show every state that is set; dirty is never hidden under merged (merged+dirty).
-          if [ "$new" = true ]; then gs="new"
+          # Show every state that is set; dirty is never hidden (new+dirty / merged+dirty).
+          if [ "$new" = true ] && [ "$dirty" = true ]; then gs="new+dirty"
+          elif [ "$new" = true ]; then gs="new"
           elif [ "$merged" = true ] && [ "$dirty" = true ]; then gs="merged+dirty"
           elif [ "$merged" = true ]; then gs="merged"
           elif [ "$dirty" = true ]; then gs="dirty"
