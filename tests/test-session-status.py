@@ -205,4 +205,48 @@ assert agents2["webapp-web"].get("missing") is True, agents2["webapp-web"]
 # --- no secret leakage in JSON ---
 assert "DEVBOX_TURN" not in r.stdout and "PASSWORD" not in r.stdout
 
+# ============================================================================
+# Status-board corrections found by operator smoke. The activity probe's blocked path
+# (a waiting prompt never fires on a non-full real pane) lives in the real tmux probe and
+# is covered by test-session-activity-tmux.py.
+# ============================================================================
+
+# --- A fresh agent (no commits of its own) is NEW, not merged/reapable ---
+# A brand-new worktree sits exactly at the commit it forked from, so its branch is
+# trivially an ancestor of base. Before the fix that read as merged -> reapable, so the
+# documented "reapable -> devbox-worktree remove" workflow would delete a LIVE agent's
+# worktree, and a never-started agent was indistinguishable from a genuinely merged one.
+fr = wt("add", "webapp", "webapp-fresh", home=home, wt_root=wt_root, repo=repo)
+assert fr.returncode == 0, fr.stderr
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+fresh = ag["webapp-fresh"]
+assert fresh.get("new") is True, "fresh_agent_is_new"
+assert fresh["merged"] is False, "fresh_agent_not_merged"
+assert fresh["reapable"] is False, "fresh_agent_not_reapable"
+# a committed+merged agent is NOT new (it has its own history)
+assert ag["webapp-cli"].get("new") is False, "merged_agent_not_new"
+
+# --- An actively-working merged agent is not reapable (activity excluded) ---
+# reapable must exclude activity=working so the reaper never targets a live agent.
+stub_cli_working = write_stub(base / "act_cli_work.sh", (
+    'case "$2" in\n'
+    '  webapp-cli) printf "node\\t3\\t\\n" ;;\n'   # non-shell, recent -> working
+    '  *) printf "bash\\t500\\t$ \\n" ;;\n'
+    'esac\n'
+))
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state, activity_cmd=stub_cli_working)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-cli"]["activity"] == "working", ag["webapp-cli"]
+assert ag["webapp-cli"]["reapable"] is False, "reapable_excludes_working"
+
+# --- The table shows dirty even when merged (merged+dirty), never hidden ---
+# gs used to be overwritten by `merged`, so a merged-but-dirty worktree printed just `merged`.
+(cli / "late.txt").write_text("uncommitted\n")  # the merged agent is now also dirty
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+ag = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+assert ag["webapp-cli"]["merged"] is True and ag["webapp-cli"]["dirty"] is True, ag["webapp-cli"]
+h = status("webapp", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+assert "merged+dirty" in h.stdout, "table must show merged+dirty, not hide dirty under merged: " + h.stdout
+
 print("session_status=PASS")
