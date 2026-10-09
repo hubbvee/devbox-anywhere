@@ -7,12 +7,20 @@
 # live tmux and never invents a session, agent, or worktree.
 #
 # Registry: $DEVBOX_SESSION_HOME/<project>.tsv (default /data/devbox/sessions), one row
-# per agent: <agent-id>\t<worktree-path>\t<branch>. Agent ids must be "<project>-<suffix>".
+# per agent: <agent-id>\t<worktree-path>\t<branch>[\t<fork-sha>]. The optional 4th column is
+# the base tip at creation, recorded by devbox-worktree so status can tell a fresh branch
+# (no commits yet) from a genuinely merged one. Agent ids must be "<project>-<suffix>".
 #
 # Usage:
 #   devbox-session list                       list projects and their agents
 #   devbox-session resolve <project>          print session=<project>
 #   devbox-session resolve <project> <agent>  print session/window/worktree/branch
+#   devbox-session status <project> [--json]  per-agent git/turn facts + activity heuristic
+#
+# status state column: new|new+dirty|clean|dirty|merged|merged+dirty, plus (reapable) when
+# merged && clean && turn free && not working. Activity (working|idle|blocked|unknown) is a
+# HEURISTIC: "working" = any non-shell foreground process, so an agent CLI idle at its own
+# prompt reads "working" (it means "a CLI is open here", not "actively producing output").
 set -eu
 
 # Registry lives under the persistent ~/.local mount (survives container rebuilds), where the
@@ -81,9 +89,10 @@ case "$cmd" in
     # Look the agent up; fail closed on missing, duplicate, or malformed rows.
     matches=0
     m_worktree=; m_branch=
-    while IFS=$(printf '\t') read -r r_agent r_worktree r_branch r_rest; do
+    while IFS=$(printf '\t') read -r r_agent r_worktree r_branch r_fork r_rest; do
       [ -n "${r_agent:-}" ] || continue
-      # A well-formed row has exactly three fields: no 4th column, non-empty worktree/branch.
+      # A well-formed row is 3 fields (legacy) or 4 (agent/worktree/branch/fork_sha). The 4th
+      # column is the optional fork SHA written by devbox-worktree; reject a 5th column.
       [ -z "${r_rest:-}" ] || die "malformed registry row for $project: extra columns"
       if [ "$r_agent" = "$agent" ]; then
         [ -n "${r_worktree:-}" ] && [ -n "${r_branch:-}" ] || die "malformed registry row for $agent"
@@ -101,11 +110,173 @@ case "$cmd" in
     printf 'session=%s\nwindow=%s\nworktree=%s\nbranch=%s\n' "$project" "$agent" "$m_worktree" "$m_branch"
     ;;
 
+  status)
+    # Git-convergence readout per agent. Exact facts only: dirty, ahead/behind
+    # vs base, merged (branch is an ancestor of base), turn holder, reapable. Activity is a heuristic.
+    json=0
+    project=""
+    for a in "$@"; do
+      case "$a" in
+        --json) json=1 ;;
+        -*) die "unknown status option: $a" ;;
+        *) [ -z "$project" ] && project=$a || die "unexpected argument: $a" ;;
+      esac
+    done
+    [ -n "$project" ] || die "usage: devbox-session status <project> [--json]"
+    reg=$(registry_of "$project")
+    [ -f "$reg" ] || die "unknown project: $project"
+    base=${DEVBOX_STATUS_BASE:-}
+
+    # JSON string escaper (backslash, quote, control chars) — worktree paths/holders are the
+    # only interpolated values and are never trusted to be JSON-safe.
+    jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
+
+    turn_of() {
+      # holder name, or "free"; tolerate devbox-turn absent/erroring -> "unknown".
+      # Resolve devbox-turn beside this script first (helpers install together), then PATH.
+      _dt="$(dirname "$0")/devbox-turn"
+      [ -x "$_dt" ] || _dt=$(command -v devbox-turn 2>/dev/null) || { printf 'unknown'; return; }
+      [ -n "$_dt" ] || { printf 'unknown'; return; }
+      out=$(bash "$_dt" status "$1" 2>/dev/null) || { printf 'free'; return; }
+      case "$out" in
+        *held*by\ *) printf '%s' "$out" | sed -n 's/.* by \([^,]*\).*/\1/p' | head -n1 ;;
+        *free*) printf 'free' ;;
+        *) printf 'unknown' ;;
+      esac
+    }
+
+    # ACTIVITY (HEURISTIC, not a fact): classify a pane as working|idle|blocked, else unknown.
+    # A probe prints one TAB line "<foreground_cmd>\t<age_seconds>\t<last_line>" for
+    # "<session> <window>"; empty output or a nonzero exit => unknown (NEVER fabricated as
+    # working). Default probe uses tmux; overridable via DEVBOX_STATUS_ACTIVITY_CMD for tests
+    # and non-tmux setups. Stall threshold DEVBOX_STATUS_STALE seconds (default 60).
+    stale_secs=${DEVBOX_STATUS_STALE:-60}
+    activity_probe=${DEVBOX_STATUS_ACTIVITY_CMD:-}
+    if [ -z "$activity_probe" ] && command -v tmux >/dev/null 2>&1; then
+      activity_probe="__tmux__"
+    fi
+    activity_of() {
+      # args: <session> <window>
+      [ -n "$activity_probe" ] || { printf 'unknown'; return; }
+      if [ "$activity_probe" = "__tmux__" ]; then
+        tmux has-session -t "=$1" 2>/dev/null || { printf 'unknown'; return; }
+        cmd=$(tmux display-message -p -t "=$1:$2" '#{pane_current_command}' 2>/dev/null) || { printf 'unknown'; return; }
+        awin=$(tmux display-message -p -t "=$1:$2" '#{window_activity}' 2>/dev/null)
+        now=$(date +%s 2>/dev/null)
+        age=""; case "$awin$now" in *[!0-9]*) : ;; *) [ -n "$awin" ] && [ -n "$now" ] && age=$((now - awin)) ;; esac
+        last=$(tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n '[^[:space:]]' | tail -n1 | cut -d: -f2-)
+        line="$cmd	${age:-}	$last"
+      else
+        line=$("$activity_probe" "$1" "$2" 2>/dev/null) || { printf 'unknown'; return; }
+      fi
+      [ -n "$line" ] || { printf 'unknown'; return; }
+      pcmd=$(printf '%s' "$line" | cut -f1)
+      page=$(printf '%s' "$line" | cut -f2)
+      plast=$(printf '%s' "$line" | cut -f3-)
+      [ -n "$pcmd" ] || { printf 'unknown'; return; }
+      # blocked: last line looks like a program waiting for input AND it has stalled.
+      case "$plast" in
+        *"(y/n)"*|*"(yes/no)"*|*"[Y/n]"*|*"[y/N]"*|*"Password:"*|*"password:"*|*"? "*|*"?)"*)
+          case "$page" in ''|*[!0-9]*) : ;; *) [ "$page" -ge "$stale_secs" ] && { printf 'blocked'; return; } ;; esac ;;
+      esac
+      # working: a non-shell foreground command.
+      case "$pcmd" in
+        sh|bash|dash|zsh|-sh|-bash|-zsh|fish|tmux) printf 'idle' ;;
+        *) printf 'working' ;;
+      esac
+    }
+
+    emit_json=""
+    table=""
+    first=1
+    while IFS=$(printf '\t') read -r agent worktree branch fork rest; do
+      [ -n "${agent:-}" ] || continue
+      missing=false; dirty=false; ahead=0; behind=0; merged=false; new=false; turn="free"; reapable=false; activity=unknown
+      if [ ! -d "$worktree" ]; then
+        missing=true
+      else
+        # base defaults: repo main, then master; fail closed only if none resolvable and none given
+        gitdir_repo=$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+        b=$base
+        if [ -z "$b" ]; then
+          if git -C "$worktree" rev-parse --verify -q main >/dev/null 2>&1; then b=main
+          elif git -C "$worktree" rev-parse --verify -q master >/dev/null 2>&1; then b=master
+          else die "cannot resolve base branch (no main/master); set DEVBOX_STATUS_BASE"; fi
+        fi
+        [ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] && dirty=true
+        counts=$(git -C "$worktree" rev-list --left-right --count "$b"...HEAD 2>/dev/null) || counts=""
+        if [ -n "$counts" ]; then
+          behind=$(printf '%s' "$counts" | awk '{print $1}')
+          ahead=$(printf '%s' "$counts" | awk '{print $2}')
+        fi
+        # new: the branch still sits exactly at its fork point -> no commits of its own yet.
+        # A fresh branch is trivially an ancestor of base, so we must NOT call that "merged":
+        # doing so made every just-created (possibly live) agent reapable.
+        #   - 4-column rows: compare HEAD to the fork SHA recorded by devbox-worktree.
+        #   - legacy 3-column rows (created before the upgrade): fall back to the branch reflog.
+        #     A branch with only its creation entry ("Created from ...") has no commits of its
+        #     own -> new. If the reflog is unreadable we cannot tell, so newness_known stays
+        #     false and the agent is never reapable (fail safe: never reap what we can't judge).
+        tip=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || tip=""
+        newness_known=false
+        if [ -n "$fork" ]; then
+          newness_known=true
+          if [ -n "$tip" ] && [ "$tip" = "$fork" ]; then new=true; fi
+        else
+          rlog=$(git -C "$worktree" reflog show --format=%gs "$branch" 2>/dev/null) || rlog=""
+          if [ -n "$rlog" ]; then
+            newness_known=true
+            nlines=$(printf '%s\n' "$rlog" | grep -c .)
+            oldest=$(printf '%s\n' "$rlog" | grep . | tail -n1)
+            case "$oldest" in
+              *"Created from"*) [ "$nlines" -eq 1 ] && new=true ;;
+            esac
+          fi
+        fi
+        # merged: an ancestor of base AND it has moved past its fork point (real history merged in).
+        if [ "$new" = false ] && git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi
+        turn=$(turn_of "$worktree")
+        # ACTIVITY is a HEURISTIC (session==project, window==agent); never blocks the git facts.
+        # Computed before reapable so an actively-working agent is never flagged reapable.
+        activity=$(activity_of "$project" "$agent")
+        if [ "$merged" = true ] && [ "$newness_known" = true ] && [ "$dirty" = false ] && [ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi
+      fi
+
+      if [ "$json" = 1 ]; then
+        [ "$first" = 1 ] || emit_json="$emit_json,"
+        first=0
+        emit_json="$emit_json{\"agent\":\"$(jesc "$agent")\",\"worktree\":\"$(jesc "$worktree")\",\"branch\":\"$(jesc "$branch")\",\"missing\":$missing,\"dirty\":$dirty,\"ahead\":$ahead,\"behind\":$behind,\"merged\":$merged,\"new\":$new,\"turn\":\"$(jesc "$turn")\",\"reapable\":$reapable,\"activity\":\"$(jesc "$activity")\"}"
+      else
+        if [ "$missing" = true ]; then
+          table="$table$(printf '%-16s %s\n' "$agent" "MISSING")"$'\n'
+        else
+          # Show every state that is set; dirty is never hidden (new+dirty / merged+dirty).
+          if [ "$new" = true ] && [ "$dirty" = true ]; then gs="new+dirty"
+          elif [ "$new" = true ]; then gs="new"
+          elif [ "$merged" = true ] && [ "$dirty" = true ]; then gs="merged+dirty"
+          elif [ "$merged" = true ]; then gs="merged"
+          elif [ "$dirty" = true ]; then gs="dirty"
+          else gs="clean"; fi
+          reap=""; [ "$reapable" = true ] && reap="  (reapable)"
+          table="$table$(printf '%-16s %-12s +%s/-%s  turn:%-10s %-8s%s\n' "$agent" "$gs" "$ahead" "$behind" "$turn" "$activity" "$reap")"$'\n'
+        fi
+      fi
+    done < "$reg"
+
+    if [ "$json" = 1 ]; then
+      printf '{"schema_version":1,"project":"%s","session":"%s","base":"%s","activity_confidence":"heuristic","agents":[%s]}\n' \
+        "$(jesc "$project")" "$(jesc "$project")" "$(jesc "${base:-auto}")" "$emit_json"
+    else
+      printf 'project=%s session=%s base=%s  (activity is a heuristic)\n' "$project" "$project" "${base:-auto}"
+      printf '%s' "$table"
+    fi
+    ;;
+
   -h|--help|help)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 
   *)
-    die "unknown command: $cmd (list|resolve)"
+    die "unknown command: $cmd (list|resolve|status)"
     ;;
 esac

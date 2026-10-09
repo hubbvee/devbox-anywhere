@@ -97,6 +97,65 @@ devbox-session list                        # confirm both agents
 devbox-worktree remove webapp webapp-api # clean removal once merged (refuses dirty WIP)
 ```
 
+## Agent status board
+
+`devbox-session status <project>` gives an at-a-glance readout of every agent on a project —
+which are working, and which are safe to clean up. (The idea is inspired by herdr's
+"agents at a glance"; this is a native reimplementation on tmux + git, not a dependency, and
+a full cockpit TUI is out of scope — run herdr on top if you want one.)
+
+```
+$ devbox-session status webapp
+project=webapp session=webapp base=main  (activity is a heuristic)
+webapp-api       dirty         +3/-0  turn:alice      working
+webapp-web       clean         +1/-0  turn:free       idle
+webapp-fresh     new           +0/-0  turn:free       idle
+webapp-cli       merged+dirty  +0/-0  turn:free       working
+webapp-old       merged        +0/-0  turn:free       idle       (reapable)
+```
+
+Two kinds of signal, deliberately distinguished:
+
+- **Exact git/turn facts** — `clean|dirty`, `+ahead/-behind` vs the base branch, `merged`
+  (the branch is an ancestor of base **and has moved past its fork point**), `new` (the
+  branch still sits exactly where it was forked — no commits of its own yet), and the
+  `devbox-turn` holder. These are computed from git and the lock; trust them. The state
+  column shows every fact that applies, so dirt is never hidden: a fresh branch with
+  uncommitted changes reads `new+dirty` and a merged one reads `merged+dirty`. `(reapable)`
+  = `merged && clean && turn free && activity != working` — safe to remove. A `new` branch
+  is **never** `merged` or `reapable`, so a just-created (possibly live) agent is never
+  flagged for cleanup.
+
+  How `new` is detected: for a worktree created by this version, `devbox-worktree` records
+  the fork point (the base tip at creation) as a 4th registry column, and `new` means
+  `HEAD == fork`. For a **legacy 3-column registry** written before the upgrade, the fork
+  column is absent, so status falls back to the branch reflog: a branch whose only reflog
+  entry is its creation (`branch: Created from …`) has no commits of its own and is `new`.
+  If the reflog is unreadable (disabled, or pruned away), newness can't be determined — the
+  agent is then **never** reported `reapable`, erring toward keeping it rather than reaping a
+  branch we can't judge. New worktrees get the fork column automatically; no migration of an
+  existing registry is required.
+- **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the tmux pane
+  (`working` = a non-shell foreground command; `idle` = a shell prompt; `blocked` = a known
+  waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). When the
+  pane can't be read it is `unknown` — never guessed. `--json` marks this with
+  `"activity_confidence":"heuristic"`. Do not gate irreversible actions on activity alone.
+  **Known limit:** `working` means *any* non-shell foreground process, so an agent CLI
+  (claude/codex) sitting idle at its own prompt still reads `working` — its process is always
+  in the foreground. For the board's main use case that is usually what you want (`working`
+  ≈ "an agent CLI is open in this window"), but it is not a claim that the agent is actively
+  producing output. Treat `working` as "occupied", not "busy".
+
+`--json` emits a schema-versioned document (`schema_version: 1`) with one object per agent;
+values are JSON-escaped and no secrets appear. The base branch is `DEVBOX_STATUS_BASE`, else
+the repo's `main` then `master`. Unknown project fails closed; a worktree that has vanished
+from disk is reported `"missing": true`, never a crash.
+
+**Reap workflow:** an agent shown `(reapable)` is merged, clean, unheld, and not actively
+running — tear it down with `devbox-worktree remove <project> <agent>` (still refuses a dirty
+tree without `--force`). An actively-`working` agent is never `(reapable)`, so following this
+workflow cannot delete a live agent's worktree.
+
 ## Dependency policy
 
 A new worktree is a **fresh checkout with no installed dependencies** — `node_modules/`, a

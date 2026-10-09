@@ -104,8 +104,13 @@ case "$cmd" in
         || { rollback; die "could not create tmux window $agent"; }
     fi
 
+    # Record the fork point (base tip at creation) so status can distinguish a genuinely
+    # merged agent from a fresh one that has no commits of its own. A brand-new branch is
+    # trivially an ancestor of base, so without this a never-started agent reads as "merged".
+    fork_sha=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || fork_sha=""
+
     # Register atomically: append via a temp file + mv.
-    row=$(printf '%s\t%s\t%s' "$agent" "$worktree" "$branch")
+    row=$(printf '%s\t%s\t%s\t%s' "$agent" "$worktree" "$branch" "$fork_sha")
     tmp=$(mktemp "${reg}.XXXXXX") || { rollback; die "cannot stage registry write"; }
     { [ -f "$reg" ] && cat "$reg"; printf '%s\n' "$row"; } > "$tmp" || { rm -f "$tmp"; rollback; die "registry write failed"; }
     mv "$tmp" "$reg" || { rm -f "$tmp"; rollback; die "registry commit failed"; }
