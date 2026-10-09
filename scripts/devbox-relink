@@ -22,6 +22,12 @@ relink() {
   echo "  $link -> $target"
 }
 mkdir -p "$HOME/.config"
+# Pre-create DIRECTORY sources so tools can write THROUGH the link on a fresh box. gh and
+# terminfo create their store via a dir-create at the link path (Go os.MkdirAll); if the
+# source dir is absent the link dangles and that create fails ("File exists"), so e.g.
+# `gh auth login` cannot persist its token on a new install. gitconfig/secrets are FILE
+# sources (the tool writes through the resolved lockfile) and must NOT be mkdir'd here.
+mkdir -p "$HOME/.local/share/gh-config" "$HOME/.local/share/terminfo"
 echo "relinking:"
 relink "$HOME/.local/share/terminfo"   "$HOME/.terminfo"      # exotic TERMs (ghostty/kitty), see docs/05
 relink "$HOME/.local/share/gh-config"  "$HOME/.config/gh"     # GitHub CLI login

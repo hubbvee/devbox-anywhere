@@ -19,5 +19,6 @@ python3 tests/test-session-registry.py
 python3 tests/test-turn-lock.py
 python3 tests/test-worktree-helper.py
 python3 tests/test-relink-dropins.py
+python3 tests/test-relink-targets-probe.py
 python3 tests/test-runner-inventory.py
 printf 'tests=PASS\n'

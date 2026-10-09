@@ -35,7 +35,13 @@ that boring:
    CLIs insist on keeping *outside* `~/.local` (e.g. `~/.config/gh`, `~/.gitconfig`)
    live in `~/.local/share/*` with symlinks pointing at them. The entrypoint re-runs
    relink at every boot, so a fresh container has every login restored before you
-   even connect. **When you add a CLI that stores config in `~/.config/<tool>`:** move
+   even connect. Relink pre-creates the **directory** sources (`~/.local/share/gh-config`,
+   `~/.local/share/terminfo`) before linking, because a tool such as `gh auth login`
+   creates its store with a directory-create at the link path and that fails against a
+   dangling symlink — so without the pre-created dir the token could not persist on a
+   fresh box. **File** sources (`~/.gitconfig`, `~/.secrets`) are not pre-created: the
+   tool writes through the resolved symlink (e.g. git's lockfile) and the file lands in
+   the store on first use. **When you add a CLI that stores config in `~/.config/<tool>`:** move
    the dir into `~/.local/share/`, add one `relink` line, done forever. This includes
    `~/.hermes` when you follow the Telegram setup in docs/10.
 3. **Persisted sshd host key** — no "host key changed!" warnings after rebuilds.
