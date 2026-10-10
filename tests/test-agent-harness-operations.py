@@ -459,6 +459,21 @@ with tempfile.TemporaryDirectory() as td:
         env_file.write_text(INSTANCE_ENV.replace(old, new, 1))
         bad_state = run("verify", "--json", "--instance", "myapp")
         assert bad_state.returncode == 1 and checks_of(bad_state)["state.file"] == "fail", f"harness_instance_state:{new!r}"
+    # A browser instance records DEVBOX_BROWSER_PORT too: a valid one verifies, and it is held to
+    # the same rules as the other ports (range, not a default port, distinct, recorded once).
+    env_file.write_text(INSTANCE_ENV + "DEVBOX_BROWSER_PORT=9081\n")
+    browser_state = run("verify", "--json", "--instance", "myapp")
+    assert browser_state.returncode == 0 and checks_of(browser_state)["state.file"] == "pass", \
+        "harness_instance_state_browser_port: " + browser_state.stdout
+    for browser_line in (
+        "DEVBOX_BROWSER_PORT=8081\n", "DEVBOX_BROWSER_PORT=9080\n", "DEVBOX_BROWSER_PORT=9022\n",
+        "DEVBOX_BROWSER_PORT=09081\n", "DEVBOX_BROWSER_PORT=1023\n",
+        "DEVBOX_BROWSER_PORT=9081\nDEVBOX_BROWSER_PORT=9082\n",
+    ):
+        env_file.write_text(INSTANCE_ENV + browser_line)
+        bad_state = run("verify", "--json", "--instance", "myapp")
+        assert bad_state.returncode == 1 and checks_of(bad_state)["state.file"] == "fail", \
+            f"harness_instance_state:browser:{browser_line!r}"
     env_file.write_text(INSTANCE_ENV)
 
     preflight_report = json.loads(run("preflight", "--json", "--instance", "myapp").stdout)

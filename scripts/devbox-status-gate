@@ -144,8 +144,21 @@ audit() (
   [ -z "$shared" ] || exit 1
   log=status-gate.log
   if [ -e "$log" ] || [ -L "$log" ]; then
-    [ ! -L "$log" ] && [ -f "$log" ] && [ -O "$log" ] || exit 1
-    size=$(wc -c < "$log" 2>/dev/null) || exit 1
+    # Another gate may rotate the log away (and a third start a fresh one) at any point
+    # between these checks. A log that is GONE (nothing at all, not even a link) is a fresh
+    # log; anything there must be your own regular file, never a symlink, tightened to 0600
+    # BEFORE it is written. A path that changed under us is looked at again, a few times at
+    # most; anything else fails closed. Errors stay off the client's stderr.
+    tries=0
+    while :; do
+      if [ ! -L "$log" ] && [ -f "$log" ] && [ -O "$log" ] && size=$({ wc -c < "$log"; } 2>/dev/null); then
+        chmod 600 "$log" 2>/dev/null && break
+      elif [ ! -e "$log" ] && [ ! -L "$log" ]; then
+        size=0; break
+      fi
+      tries=$((tries + 1))
+      [ "$tries" -lt 3 ] || exit 1
+    done
     size=${size//[!0-9]/}
     if [ "${size:-0}" -gt "$LOG_MAX_BYTES" ]; then
       # One rotator at a time (mkdir is atomic); a lock left by a killed gate expires after a
@@ -154,7 +167,7 @@ audit() (
       if [ -n "$(find "$lock" -prune -mmin +1 -print 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null || :; fi
       if mkdir "$lock" 2>/dev/null; then
         rotated=0
-        size=$(wc -c < "$log" 2>/dev/null) || size=0
+        size=$({ wc -c < "$log"; } 2>/dev/null) || size=0
         size=${size//[!0-9]/}
         if [ "${size:-0}" -le "$LOG_MAX_BYTES" ]; then
           rotated=1
@@ -171,8 +184,7 @@ audit() (
   client=${SSH_CLIENT:-}
   client=${client%% *}
   client=$(printf '%s' "${client:0:64}" | LC_ALL=C tr -c '0-9A-Fa-f.:' '?')
-  printf '%s\t%s\t%s\t%s\t%s\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log" 2>/dev/null || exit 1
-  chmod 600 "$log" 2>/dev/null || exit 1
+  { printf '%s\t%s\t%s\t%s\t%s\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log"; } 2>/dev/null || exit 1
 )
 
 deny() {

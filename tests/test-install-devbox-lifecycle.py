@@ -202,6 +202,7 @@ assert success.returncode == 0, "docker_exact_argv: " + success.stderr
 assert "Installation complete" in success.stdout
 assert "DOCKER_CONFIG=/nonexistent/devbox-anywhere-docker-config" in success.stdout, "status_docker_config"
 assert "docker --context default compose" in success.stdout, "status_docker_context"
+assert f"  Add an SSH public key: sudo sh -c 'cat >> \"{data}/ssh/authorized_keys\"'\n" in success.stdout, "default_key_hint"
 assert "TEST_GENERATED_PASSWORD" not in success.stdout + success.stderr
 env_file = data / "install/compose.env"
 assert env_file.exists()

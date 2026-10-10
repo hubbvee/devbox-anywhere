@@ -17,6 +17,9 @@ probe reported another window's activity for an agent that has no window at all:
     provably absent, so (merged, clean, free) it stays reapable
   - two windows carrying the agent's name (ambiguous)              -> unknown (was misread working)
     and, merged/clean/free, NEVER reapable: one of them may be the live agent
+  - a split window whose ACTIVE pane is an idle shell while the agent's command runs in the other
+    pane                                                           -> working (was misread idle),
+    so, merged/clean/free, NOT reapable
 In a second session ("rf"), a decoy window whose name holds raw newlines forges a
 "<count>\t<id>\t<agent>" row for the current window. The listing is then rejected as a whole:
   - the windowless agent the row names                             -> unknown (was misread idle)
@@ -92,7 +95,7 @@ try:
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
     }
-    agents_of = {project: ("rt-block", "rt-work", "rt-idle", "rt-ghost", "rt-dup"),
+    agents_of = {project: ("rt-block", "rt-work", "rt-idle", "rt-ghost", "rt-dup", "rt-split"),
                  "rf": ("rf-forge", "rf-live")}
     for proj, names in agents_of.items():
         for agent in names:
@@ -100,7 +103,7 @@ try:
                                capture_output=True, text=True)
             assert r.returncode == 0, f"wt add {agent}: {r.stderr}"
     # merged + clean + turn free: their reapable flag is then decided by the activity probe alone
-    for agent in ("rt-ghost", "rt-dup", "rf-live"):
+    for agent in ("rt-ghost", "rt-dup", "rt-split", "rf-live"):
         wt = wt_root / agent
         (wt / f"{agent}.txt").write_text("done\n")
         git("add", f"{agent}.txt", cwd=wt)
@@ -122,6 +125,13 @@ try:
     # rt-dup: the agent's name labels TWO windows -> ambiguous.
     tmux("new-window", "-t", f"={project}", "-n", "rt-dup", "-c", str(wt_root / "rt-dup"), "sleep 300")
     tmux("new-window", "-t", f"={project}", "-n", "rt-dup", "-c", str(wt_root / "rt-dup"), "sleep 300")
+    # rt-split: the agent's command in one pane, then a split whose new (now ACTIVE) pane is an
+    # idle shell -- what list-windows' #{pane_current_command} and capture-pane both read.
+    tmux("new-window", "-t", f"={project}", "-n", "rt-split", "-c", str(wt_root / "rt-split"), "sleep 300")
+    split_id = tmux("display-message", "-p", "-t", f"={project}:rt-split", "#{window_id}").stdout.strip()
+    tmux("split-window", "-t", split_id, "-c", str(wt_root / "rt-split"), "bash --norc --noprofile -i")
+    split_panes = tmux("list-panes", "-t", split_id, "-F", "#{pane_active} #{pane_current_command}").stdout.split("\n")
+    assert sorted(line for line in split_panes if line) == ["0 sleep", "1 bash"], f"setup: split panes {split_panes!r}"
     # rt-ghost-2: a busy window whose name only EXTENDS rt-ghost's (a prefix/glob match aliases it)
     tmux("new-window", "-t", f"={project}", "-n", "rt-ghost-2", "-c", str(base), "sleep 300")
     # main: a non-agent idle shell (the operator's own window) -- made the session's CURRENT
@@ -163,7 +173,7 @@ try:
         return {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
 
     agents = status(project)
-    for agent in ("rt-ghost", "rt-dup"):
+    for agent in ("rt-ghost", "rt-dup", "rt-split"):
         a = agents[agent]
         assert a["merged"] is True and a["dirty"] is False and a["turn"] == "free", f"setup: {a}"
     assert agents["rt-block"]["activity"] == "blocked", \
@@ -180,6 +190,8 @@ try:
         f"an agent whose name labels two windows is ambiguous and must read unknown: {agents['rt-dup']}"
     assert agents["rt-dup"]["reapable"] is False, \
         f"a live but ambiguous window must never be reapable: {agents['rt-dup']}"
+    assert agents["rt-split"]["activity"] == "working" and agents["rt-split"]["reapable"] is False, \
+        f"a split window running the agent in a pane that is not active must read working: {agents['rt-split']}"
 
     if forge_live:
         agents = status("rf")

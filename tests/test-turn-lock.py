@@ -8,8 +8,10 @@ sandbox boundary.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
+import stat
 import subprocess
 import tempfile
 import time
@@ -87,6 +89,29 @@ assert "bob" in run("status", WT, state=stale, ttl="1").stdout, "reclaimer becom
 # path-unsafe / empty worktree arg fails closed.
 assert run("take", "", state=state, holder="x").returncode != 0
 assert run("status", state=state).returncode != 0
+
+# status is read-only (it never creates the state dir); take creates it owner-only, because every
+# status call -- including the read-only status gate's -- reads the lock files.
+inj_state = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-inj-")) / "state"
+r = run("status", WT, state=inj_state)
+assert r.returncode == 0 and "free" in r.stdout and not inj_state.exists(), "turn_status_read_only"
+assert run("take", WT, state=inj_state, holder="bob").returncode == 0
+assert stat.S_IMODE(inj_state.stat().st_mode) == 0o700, f"turn_state_owner_only:{oct(inj_state.stat().st_mode)}"
+
+# The lock's ts file is DATA. bash evaluates a variable's value inside $(( )) as an expression,
+# array-subscript command substitutions included, so it must be checked before any arithmetic.
+# Unparsable (or octal-looking) timestamps read as a held, STALE lock -- never a crash, never code.
+ld = inj_state / hashlib.sha256(WT.encode()).hexdigest()
+canary = inj_state.parent / "canary"
+for payload in (f"SECONDS[$(touch {canary})]", f"a[$(touch {canary})]+1", "x y", "", "09", "1" * 40):
+    (ld / "ts").write_text(payload)
+    r = run("status", WT, state=inj_state)
+    assert not canary.exists(), f"turn_ts_not_evaluated:{payload!r}"
+    assert r.returncode == 0 and r.stdout.startswith(f"held (STALE, reclaimable): {WT} by bob, age="), \
+        f"turn_ts_not_evaluated:{payload!r}:{r.stdout!r}:{r.stderr!r}"
+    assert run("take", WT, state=inj_state, holder="carol").returncode == 0, f"turn_ts_stale_reclaimable:{payload!r}"
+    assert not canary.exists(), f"turn_ts_not_evaluated:take:{payload!r}"
+    (ld / "holder").write_text("bob")
 
 # The tool documents itself as advisory, not a security boundary.
 text = TOOL.read_text().lower()

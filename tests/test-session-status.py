@@ -3,8 +3,12 @@
 
 Exact facts per agent: dirty, ahead/behind vs base, merged (branch is ancestor of base),
 turn holder, and reapable = merged && !dirty && turn free. Fixture-driven with a real git
-repo + worktrees; no live tmux (activity classification is covered separately). Fails closed
-on unknown project; a registered worktree gone from disk is reported `missing`, never a crash.
+repo + worktrees; no live tmux (activity classification is covered separately): every status
+call gets a private, empty TMUX_TMPDIR and no TMUX, so a tmux server on the host can never
+change a result. Fails closed on unknown project; a registered worktree gone from disk is
+reported `missing`, one git cannot read is reported `error`, never a crash. Also pinned: status
+never takes git's optional index lock, a turn it cannot read exactly never reads free, and every
+field is safe to print (JSON-escaped control bytes, printable-ASCII table).
 """
 from __future__ import annotations
 
@@ -39,8 +43,19 @@ def wt(*args: str, home, wt_root, repo) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["bash", str(WT_TOOL), *args], env=wt_env(home, wt_root, repo), capture_output=True, text=True)
 
 
+NO_TMUX_DIR = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-notmux-"))
+
+
+def hermetic(env: dict[str, str]) -> dict[str, str]:
+    # A private, empty tmux socket dir: the host's own tmux server is never queried.
+    env = dict(env) | {"TMUX_TMPDIR": str(NO_TMUX_DIR)}
+    for key in ("TMUX", "DEVBOX_STATUS_ACTIVITY_CMD", "GIT_OPTIONAL_LOCKS", "DEVBOX_TURN_HOLDER"):
+        env.pop(key, None)
+    return env
+
+
 def status(*args: str, home, wt_root, repo, turn_state=None, activity_cmd=None, stale=None) -> subprocess.CompletedProcess[str]:
-    env = wt_env(home, wt_root, repo) | {"DEVBOX_STATUS_BASE": "main"}
+    env = hermetic(wt_env(home, wt_root, repo) | {"DEVBOX_STATUS_BASE": "main"})
     if turn_state is not None:
         env["DEVBOX_TURN_STATE"] = str(turn_state)
     if activity_cmd is not None:
@@ -191,6 +206,19 @@ assert r.returncode == 0, r.stderr
 for a in json.loads(r.stdout)["agents"]:
     assert a["activity"] in {"working", "idle", "blocked", "unknown"}, a
 
+# --- read-only: status never takes git's optional index lock or rewrites the index ---
+# A plain `git status` refreshes stat data and rewrites the worktree's index under index.lock,
+# so polling status (e.g. a bot through the status gate) would make an agent's own git
+# add/commit/rebase fail at random with "index.lock: File exists".
+web_index = pathlib.Path(git("rev-parse", "--absolute-git-dir", cwd=web)) / "index"
+future = web_index.stat().st_mtime + 100
+os.utime(web / "w.txt", (future, future))  # stat data now differs from the index entry
+index_before = web_index.read_bytes()
+r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
+assert r.returncode == 0, r.stderr
+assert web_index.read_bytes() == index_before, "status_index_untouched"
+assert not web_index.with_name("index.lock").exists(), "status_index_untouched:lock"
+
 # --- fail closed: unknown project ---
 assert status("ghost", "--json", home=home, wt_root=wt_root, repo=repo).returncode != 0
 
@@ -297,5 +325,116 @@ assert lag["legacy-fresh"]["reapable"] is False, "legacy_fresh_not_reapable"
 assert lag["legacy-done"]["new"] is False, "legacy_done_not_new"
 assert lag["legacy-done"]["merged"] is True and lag["legacy-done"]["reapable"] is True, "legacy_done_reapable"
 shutil.rmtree(lbase, ignore_errors=True)
+
+# ============================================================================
+# Edge cases: everything below is written by agents (registry rows, turn locks), so status must
+# fail closed on what it cannot read exactly and print only what is safe to print.
+# ============================================================================
+ebase = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-edge-"))
+erepo = ebase / "repo"; erepo.mkdir()
+git("init", "-q", "-b", "main", cwd=erepo)
+git("config", "user.email", "t@e", cwd=erepo)
+git("config", "user.name", "t", cwd=erepo)
+(erepo / "README.md").write_text("seed\n")
+git("add", "README.md", cwd=erepo)
+git("commit", "-q", "-m", "seed", cwd=erepo)
+ehome = ebase / "sessions"; ehome.mkdir()
+ewt_root = ebase / "worktrees"
+eturn = ebase / "turn"
+EDGE = ("edge-ok", "edge-free", "edge-byfree", "edge-ts", "edge-ctl")
+for a in EDGE:  # all merged + clean: only the turn decides whether they read reapable
+    rr = wt("add", "edge", a, home=ehome, wt_root=ewt_root, repo=erepo)
+    assert rr.returncode == 0, rr.stderr
+    awt = ewt_root / a
+    (awt / f"{a}.txt").write_text("done\n")
+    git("add", f"{a}.txt", cwd=awt)
+    git("commit", "-q", "-m", a, cwd=awt)
+    git("merge", "-q", "--no-ff", "-m", f"merge {a}", f"agent/{a}", cwd=erepo)
+
+
+def take(agent: str, holder: str) -> None:
+    subprocess.run(["bash", str(TURN_TOOL), "take", str(ewt_root / agent)],
+                   env=os.environ | {"DEVBOX_TURN_STATE": str(eturn), "DEVBOX_TURN_HOLDER": holder},
+                   capture_output=True, text=True, check=True)
+
+
+take("edge-free", "free")             # a holder literally named "free" still holds the turn
+take("edge-byfree", "x by free")      # a holder whose name ends in " by free"
+take("edge-ts", "bob")                # held, then its timestamp is corrupted below
+take("edge-ctl", "bob\r\x1b[2Kok")    # control bytes in the holder name
+key = subprocess.run(["bash", "-c", 'printf %s "$1" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d" " -f1',
+                      "_", str(ewt_root / "edge-ts")], capture_output=True, text=True, check=True).stdout.strip()
+(eturn / key / "ts").write_text("x y")
+
+# A registered directory git cannot read, and a row whose fields hold control and non-UTF-8 bytes.
+notgit = ebase / "notgit"; notgit.mkdir()
+ctl_agent = b"edge-x\x1b]0;pwned\x07\r"
+ctl_row = ctl_agent + b"\t/nonexistent/\x1b[2K\xff\tb\x7f\n"
+with (ehome / "edge.tsv").open("ab") as reg_file:
+    reg_file.write(f"edge-broken\t{notgit}\tagent/edge-broken\n".encode() + ctl_row)
+
+
+def edge_status(*args: str, base_env: bool = True, tool: pathlib.Path = TOOL) -> subprocess.CompletedProcess[bytes]:
+    env = hermetic(wt_env(ehome, ewt_root, erepo) | {"DEVBOX_TURN_STATE": str(eturn)})
+    if base_env:
+        env["DEVBOX_STATUS_BASE"] = "main"
+    else:
+        env.pop("DEVBOX_STATUS_BASE", None)
+    return subprocess.run(["bash", str(tool), "status", "edge", *args], env=env, capture_output=True)
+
+
+def parsed(r: subprocess.CompletedProcess[bytes]) -> dict[str, dict]:
+    assert r.returncode == 0, f"status_edge_rc:{r.returncode}:{r.stderr!r}"
+    try:
+        doc = json.loads(r.stdout.decode("utf-8"))
+    except ValueError as error:  # UnicodeDecodeError is a ValueError too
+        raise AssertionError(f"status_json_control_escaped:{error}:{r.stdout[-300:]!r}") from None
+    return {a["agent"]: a for a in doc["agents"]}
+
+
+for base_env in (True, False):
+    eag = parsed(edge_status("--json", base_env=base_env))
+    assert eag["edge-ok"]["turn"] == "free" and eag["edge-ok"]["reapable"] is True, f"setup:{eag['edge-ok']}"
+    # A turn that cannot be read exactly is never "free", so never reapable.
+    assert eag["edge-free"]["turn"] == "unknown" and eag["edge-free"]["reapable"] is False, \
+        f"turn_holder_named_free_not_reapable:{eag['edge-free']}"
+    assert eag["edge-byfree"]["turn"] == "unknown" and eag["edge-byfree"]["reapable"] is False, \
+        f"turn_holder_by_free_not_reapable:{eag['edge-byfree']}"
+    assert eag["edge-ts"]["turn"] == "bob" and eag["edge-ts"]["reapable"] is False, \
+        f"turn_corrupt_ts_still_held:{eag['edge-ts']}"
+    assert eag["edge-ctl"]["turn"] == "unknown" and eag["edge-ctl"]["reapable"] is False, \
+        f"turn_holder_unsafe_reads_unknown:{eag['edge-ctl']}"
+    # One unreadable worktree is that agent's error, not a crash hiding every other agent.
+    broken = eag["edge-broken"]
+    assert broken["error"] is True and broken["missing"] is False and broken["reapable"] is False, \
+        f"status_broken_worktree_error:{broken}"
+    assert eag["edge-ok"]["error"] is False, eag["edge-ok"]
+    # Control bytes are \u-escaped (the value round-trips), invalid UTF-8 bytes too.
+    ctl = eag[ctl_agent.decode("latin-1")]
+    assert ctl["worktree"] == "/nonexistent/\x1b[2K\u00ff" and ctl["branch"] == "b\x7f", f"status_json_control_escaped:{ctl}"
+assert set(eag) == set(EDGE) | {"edge-broken", ctl_agent.decode("latin-1")}, sorted(eag)
+
+# The table and `list` print only printable ASCII (no ESC/CR/BEL reaches a terminal or a bot).
+table = edge_status()
+assert table.returncode == 0, table.stderr
+listed = subprocess.run(["bash", str(TOOL), "list"], env=hermetic(wt_env(ehome, ewt_root, erepo)), capture_output=True)
+assert listed.returncode == 0, listed.stderr
+for label, out in (("table", table.stdout), ("list", listed.stdout)):
+    bad = sorted({b for b in out if (b < 0x20 and b != 0x0A) or b >= 0x7F})
+    assert not bad, f"status_table_printable:{label}:{bad}"
+rows = {line.split()[0]: line for line in table.stdout.decode().splitlines()[1:]}
+assert rows["edge-broken"].split()[1] == "ERROR", "status_broken_worktree_error:table"
+assert "(reapable)" in rows["edge-ok"] and "(reapable)" not in rows["edge-free"], f"setup:{rows}"
+assert rows["edge-x?]0;pwned??"].split()[1] == "MISSING", f"status_table_printable:row:{rows}"
+
+# devbox-turn failing (absent state, a crash, anything) reads "unknown", never "free".
+fake_bin = ebase / "bin"; fake_bin.mkdir()
+shutil.copyfile(TOOL, fake_bin / "devbox-session")
+(fake_bin / "devbox-turn").write_text("#!/bin/sh\nprintf 'free: %s\\n' \"$2\"\nexit 1\n")
+(fake_bin / "devbox-turn").chmod(0o755)
+eag = parsed(edge_status("--json", tool=fake_bin / "devbox-session"))
+assert eag["edge-ok"]["turn"] == "unknown" and eag["edge-ok"]["reapable"] is False, f"turn_error_reads_unknown:{eag['edge-ok']}"
+shutil.rmtree(ebase, ignore_errors=True)
+shutil.rmtree(NO_TMUX_DIR, ignore_errors=True)
 
 print("session_status=PASS")

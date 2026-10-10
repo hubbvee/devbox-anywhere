@@ -232,6 +232,24 @@ for expected in (
     assert expected in result.stdout, f"instance_status_project:{expected!r}"
 for stale in ("127.0.0.1:8080", "ssh -L 2222", "-p 2222", "port 8080"):
     assert stale not in result.stdout, f"instance_default_port_printed:{stale!r}"
+# The SSH-key hint for an instance adds the key from INSIDE, as coder: the instance's ssh/ dir is
+# writable by its agents, so a host-root append there could follow a planted symlink to a host file.
+KEY_HINT = re.compile(
+    re.escape("  Add an SSH public key: sudo env -i PATH=") + r"[^ ]+"
+    + re.escape(
+        " HOME=/root DOCKER_CONFIG=/nonexistent/devbox-anywhere-docker-config docker --context default exec -i"
+        " --user coder devbox-myapp sh -c 'cat >> /home/coder/.ssh/authorized_keys'\n"
+        f"    (as coder inside the instance; never append to {instance_root}/ssh/authorized_keys as host root)\n"
+    )
+)
+
+
+def key_hint_in_container(stdout: str, label: str) -> None:
+    assert KEY_HINT.search(stdout), f"instance_key_hint_in_container:{label}"
+    assert "sh -c 'cat >> \"" not in stdout, f"instance_key_hint_in_container:{label}:host-root form"
+
+
+key_hint_in_container(result.stdout, "install")
 
 # Re-run: the instance's own listeners (recorded ports) are not a collision; password preserved.
 password_line = env_lines[0]
@@ -246,6 +264,10 @@ rerun = subprocess.run(
 )
 assert rerun.returncode == 0, "instance_rerun_owned_ports: " + rerun.stderr
 assert env_file.read_text().splitlines()[0] == password_line, "instance_rerun_password"
+# The re-run rewrites compose.env: every instance setting must survive it, or Compose would fall
+# back to the default container name and ports under this instance's project.
+assert env_file.read_text().splitlines()[1:] == env_lines[1:], "instance_env_settings:rerun"
+key_hint_in_container(rerun.stdout, "rerun")
 rerun_records = [json.loads(line) for line in log.read_text().splitlines()][len(records):]
 assert [record["args"] for record in rerun_records] == expected_argv, "instance_docker_exact_order:rerun"
 
@@ -327,7 +349,7 @@ listing_failed, *_ = install(INSTANCE_ARGS, mode="containers-fail")
 assert listing_failed.returncode != 0 and "could not list existing containers" in listing_failed.stderr, "instance_container_list_fail_closed"
 
 # --- 8. Instance with the browser profile: profile + project on every Compose call. -------------
-b_result, b_installer, _, b_log, b_data, _ = install([*INSTANCE_ARGS, "--with-browser", "--browser-port", "9081"])
+b_result, b_installer, b_env_vars, b_log, b_data, b_approved = install([*INSTANCE_ARGS, "--with-browser", "--browser-port", "9081"])
 assert b_result.returncode == 0, "instance_browser_install: " + b_result.stderr
 b_calls = [json.loads(line)["args"] for line in b_log.read_text().splitlines()]
 b_compose = [call for call in b_calls if "compose" in call and ("build" in call or "up" in call)]
@@ -339,6 +361,20 @@ assert "DEVBOX_BROWSER_PORT=9081\n" in b_env and b_env.count("DEVBOX_BROWSER_PAS
 assert (b_data.parent / "devbox-myapp/browser").is_dir(), "instance_browser_data_dir"
 assert "ssh -L 9081:127.0.0.1:9081 HOST_USER@SERVER_ADDRESS then open http://127.0.0.1:9081" in b_result.stdout, "instance_browser_tunnel"
 assert "Never expose port 9081 publicly." in b_result.stdout, "instance_browser_warning"
+# Re-running (upgrading) a browser instance: its own noVNC port is one of the ports it recorded,
+# so the browser container holding it is not a collision.
+b_root = b_data.parents[1]
+(b_root / "listening.txt").write_text(
+    "LISTEN 0 4096 127.0.0.1:9080 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:9022 0.0.0.0:*\n"
+    "LISTEN 0 4096 127.0.0.1:9081 0.0.0.0:*\n"
+)
+(b_root / "containers.txt").write_text("devbox-myapp devbox-myapp\ndevbox-myapp-browser devbox-myapp\n")
+b_rerun = subprocess.run(
+    ["bash", str(b_installer), "--yes", "--approved-commit", b_approved, *INSTANCE_ARGS, "--with-browser", "--browser-port", "9081"],
+    env=b_env_vars, capture_output=True, text=True,
+)
+assert b_rerun.returncode == 0, "instance_browser_rerun_owned_ports: " + b_rerun.stderr
+assert (b_data.parent / "devbox-myapp/install/compose.env").read_text() == b_env, "instance_browser_rerun_owned_ports:env"
 
 # Failure path names the instance container in the recovery hint.
 failed, *_ = install(INSTANCE_ARGS, mode="http-fail")

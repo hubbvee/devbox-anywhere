@@ -19,9 +19,13 @@
 #
 # status state column: new|new+dirty|clean|dirty|merged|merged+dirty, plus (reapable) when
 # merged && clean && turn free && not working, and never while a window with the agent's name
-# may exist but cannot be read reliably. Activity (working|idle|blocked|unknown) is a
-# HEURISTIC: "working" = any non-shell foreground process, so an agent CLI idle at its own
+# may exist but cannot be read reliably. A registered worktree that git cannot read is shown
+# as ERROR ("error": true) and is never reapable; the other agents are still reported.
+# Activity (working|idle|blocked|unknown) is a HEURISTIC: "working" = any non-shell
+# foreground process in any pane of the agent's window, so an agent CLI idle at its own
 # prompt reads "working" (it means "a CLI is open here", not "actively producing output").
+# Output is safe to print: --json escapes every control byte, and the table and `list`
+# replace anything but printable ASCII with '?'.
 set -eu
 
 # Registry lives under the persistent ~/.local mount (survives container rebuilds), where the
@@ -29,6 +33,12 @@ set -eu
 SESSION_HOME=${DEVBOX_SESSION_HOME:-${HOME:-/home/coder}/.local/state/devbox/sessions}
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Registry fields and turn holders are written by agents: for the table and `list`, show
+# printable ASCII only (anything else, including ESC, CR and other control bytes -> '?').
+shown() { printf '%s' "$1" | LC_ALL=C tr -c ' -~' '?'; }
+# Same, for a column that must stay one word: a space becomes '?' too.
+shown_word() { printf '%s' "$1" | LC_ALL=C tr -c '!-~' '?'; }
 
 # A project/agent name must be a safe single path segment: no slashes, no dots-only,
 # no leading dash. This blocks path traversal and tmux/option confusion.
@@ -59,10 +69,10 @@ case "$cmd" in
       [ -e "$reg" ] || continue
       found=1
       project=$(basename "$reg" .tsv)
-      printf 'project=%s session=%s\n' "$project" "$project"
+      printf 'project=%s session=%s\n' "$(shown_word "$project")" "$(shown_word "$project")"
       while IFS=$(printf '\t') read -r agent worktree branch rest; do
         [ -n "${agent:-}" ] || continue
-        printf '  agent=%s window=%s worktree=%s branch=%s\n' "$agent" "$agent" "$worktree" "$branch"
+        printf '  agent=%s window=%s worktree=%s branch=%s\n' "$(shown_word "$agent")" "$(shown_word "$agent")" "$(shown "$worktree")" "$(shown "$branch")"
       done < "$reg"
     done
     [ "$found" = 1 ] || echo "no sessions"
@@ -127,22 +137,65 @@ case "$cmd" in
     reg=$(registry_of "$project")
     [ -f "$reg" ] || die "unknown project: $project"
     base=${DEVBOX_STATUS_BASE:-}
+    # Read-only: never take git's optional locks. A plain `git status` takes the worktree's
+    # index.lock and rewrites the index to refresh stat data, so a status poll (e.g. through
+    # the status gate) could make an agent's own git add/commit/rebase fail at random.
+    GIT_OPTIONAL_LOCKS=0
+    export GIT_OPTIONAL_LOCKS
 
-    # JSON string escaper (backslash, quote, control chars) — worktree paths/holders are the
-    # only interpolated values and are never trusted to be JSON-safe.
-    jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
+    # JSON string body for arbitrary bytes. Registry fields and turn holders are written by
+    # agents, so nothing here is trusted to be JSON-safe: backslash and quote are escaped,
+    # every control byte (0x00-0x1f, 0x7f) becomes \u00XX, and if the value is not valid UTF-8
+    # its bytes >= 0x80 become \u00XX too, so the document always parses.
+    jesc() (
+      LC_ALL=C
+      _s=$1
+      case "$_s" in
+        *[!\ -~]*) : ;;
+        *) printf '%s' "$_s" | sed 's/\\/\\\\/g; s/"/\\"/g'; exit 0 ;;
+      esac
+      _hi=raw
+      case "$_s" in
+        *[!\ -~$'\001'-$'\037'$'\177']*)
+          printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || _hi=esc ;;
+      esac
+      _o=; _i=0
+      while [ "$_i" -lt "${#_s}" ]; do
+        _c=${_s:_i:1}
+        _i=$((_i + 1))
+        case "$_c" in
+          '"') _o="$_o\\\"" ;;
+          '\') _o="$_o\\\\" ;;
+          [\ -~]) _o="$_o$_c" ;;
+          [$'\001'-$'\037'$'\177']) _o="$_o$(printf '\\u%04x' "'$_c")" ;;
+          *) if [ "$_hi" = raw ]; then _o="$_o$_c"; else _o="$_o$(printf '\\u00%02x' "$(( $(printf '%d' "'$_c") & 255 ))")"; fi ;;
+        esac
+      done
+      printf '%s' "$_o"
+    )
 
     turn_of() {
-      # holder name, or "free"; tolerate devbox-turn absent/erroring -> "unknown".
+      # The holder's name, "free", or "unknown". "free" only from devbox-turn exiting 0 with
+      # exactly "free: <worktree>"; a holder is read between the known "<worktree> by " prefix
+      # and the final ", age=" and must be a plain name ([A-Za-z0-9._@+:-], never the words
+      # free/unknown). An absent or failing devbox-turn, any other output, or any other holder
+      # reads "unknown", which is never reapable (fail closed: a held turn never reads free).
       # Resolve devbox-turn beside this script first (helpers install together), then PATH.
       _dt="$(dirname "$0")/devbox-turn"
       [ -x "$_dt" ] || _dt=$(command -v devbox-turn 2>/dev/null) || { printf 'unknown'; return; }
       [ -n "$_dt" ] || { printf 'unknown'; return; }
-      out=$(bash "$_dt" status "$1" 2>/dev/null) || { printf 'free'; return; }
+      out=$(bash "$_dt" status "$1" 2>/dev/null) || { printf 'unknown'; return; }
       case "$out" in
-        *held*by\ *) printf '%s' "$out" | sed -n 's/.* by \([^,]*\).*/\1/p' | head -n1 ;;
-        *free*) printf 'free' ;;
-        *) printf 'unknown' ;;
+        "free: $1") printf 'free'; return ;;
+        "held: $1 by "*) _h=${out#"held: $1 by "} ;;
+        "held (STALE, reclaimable): $1 by "*) _h=${out#"held (STALE, reclaimable): $1 by "} ;;
+        *) printf 'unknown'; return ;;
+      esac
+      case "$_h" in *", age="*) _h=${_h%", age="*} ;; *) printf 'unknown'; return ;; esac
+      case "$_h" in
+        ''|free|unknown) printf 'unknown' ;;
+        *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._@+:-]*) printf 'unknown' ;;
+        *) printf '%s' "$_h" ;;
       esac
     }
 
@@ -206,6 +259,24 @@ case "$cmd" in
         awin=${mrow%%"$tab"*}
         cmd=${mrow#*"$tab"}
         [ -n "$cmd" ] || { printf 'unknown held'; return; }
+        # Every pane of that window, not only the active one: an agent CLI keeps running in a
+        # pane that is not selected (the facts above and capture-pane below read the ACTIVE pane
+        # only). Count-prefixed and line-counted like tmux_rows, since a pane command may hold
+        # raw newlines; an unreadable or inconsistent listing => held. With two or more panes,
+        # any non-shell command in any of them => working.
+        panes=$(tmux list-panes -t "$wid" -F "#{window_panes}${tab}#{pane_current_command}" 2>/dev/null && printf '.') || { printf 'unknown held'; return; }
+        panes=${panes%.}
+        pn=${panes%%"$tab"*}
+        case "$pn" in ''|*[!0-9]*) printf 'unknown held'; return ;; esac
+        [ "$pn" -ge 1 ] && [ "$(printf '%s' "$panes" | grep -c '')" -eq "$pn" ] || { printf 'unknown held'; return; }
+        pi=0; pbusy=""
+        while [ "$pi" -lt "$pn" ] && IFS= read -r pl; do
+          pi=$((pi + 1))
+          case "$pl" in *"$tab"?*) : ;; *) printf 'unknown held'; return ;; esac
+          case "${pl#*"$tab"}" in sh|bash|dash|zsh|-sh|-bash|-zsh|fish|tmux) : ;; *) pbusy=1 ;; esac
+        done <<< "$panes"
+        [ "$pi" -eq "$pn" ] || { printf 'unknown held'; return; }
+        if [ "$pn" -gt 1 ] && [ -n "$pbusy" ]; then printf 'working'; return; fi
         now=$(date +%s 2>/dev/null)
         age=""; case "$awin$now" in *[!0-9]*) : ;; *) [ -n "$awin" ] && [ -n "$now" ] && age=$((now - awin)) ;; esac
         # The pane read must itself succeed (a window that vanished since the listing => held);
@@ -238,19 +309,24 @@ case "$cmd" in
     first=1
     while IFS=$(printf '\t') read -r agent worktree branch fork rest; do
       [ -n "${agent:-}" ] || continue
-      missing=false; dirty=false; ahead=0; behind=0; merged=false; new=false; turn="free"; reapable=false; activity=unknown
+      missing=false; broken=false; dirty=false; ahead=0; behind=0; merged=false; new=false; turn="free"; reapable=false; activity=unknown
+      porcelain=""
       if [ ! -d "$worktree" ]; then
         missing=true
+      elif ! porcelain=$(git -C "$worktree" status --porcelain 2>/dev/null); then
+        # A registered directory git cannot read (not a repository, a broken .git link,
+        # "dubious ownership", ...): that agent's own error state, never reapable, never a crash
+        # that would hide the other agents.
+        broken=true; turn=unknown
       else
         # base defaults: repo main, then master; fail closed only if none resolvable and none given
-        gitdir_repo=$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
         b=$base
         if [ -z "$b" ]; then
           if git -C "$worktree" rev-parse --verify -q main >/dev/null 2>&1; then b=main
           elif git -C "$worktree" rev-parse --verify -q master >/dev/null 2>&1; then b=master
           else die "cannot resolve base branch (no main/master); set DEVBOX_STATUS_BASE"; fi
         fi
-        [ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] && dirty=true
+        [ -n "$porcelain" ] && dirty=true
         counts=$(git -C "$worktree" rev-list --left-right --count "$b"...HEAD 2>/dev/null) || counts=""
         if [ -n "$counts" ]; then
           behind=$(printf '%s' "$counts" | awk '{print $1}')
@@ -297,10 +373,12 @@ case "$cmd" in
       if [ "$json" = 1 ]; then
         [ "$first" = 1 ] || emit_json="$emit_json,"
         first=0
-        emit_json="$emit_json{\"agent\":\"$(jesc "$agent")\",\"worktree\":\"$(jesc "$worktree")\",\"branch\":\"$(jesc "$branch")\",\"missing\":$missing,\"dirty\":$dirty,\"ahead\":$ahead,\"behind\":$behind,\"merged\":$merged,\"new\":$new,\"turn\":\"$(jesc "$turn")\",\"reapable\":$reapable,\"activity\":\"$(jesc "$activity")\"}"
+        emit_json="$emit_json{\"agent\":\"$(jesc "$agent")\",\"worktree\":\"$(jesc "$worktree")\",\"branch\":\"$(jesc "$branch")\",\"missing\":$missing,\"error\":$broken,\"dirty\":$dirty,\"ahead\":$ahead,\"behind\":$behind,\"merged\":$merged,\"new\":$new,\"turn\":\"$(jesc "$turn")\",\"reapable\":$reapable,\"activity\":\"$(jesc "$activity")\"}"
       else
         if [ "$missing" = true ]; then
-          table="$table$(printf '%-16s %s\n' "$agent" "MISSING")"$'\n'
+          table="$table$(printf '%-16s %s\n' "$(shown_word "$agent")" "MISSING")"$'\n'
+        elif [ "$broken" = true ]; then
+          table="$table$(printf '%-16s %s\n' "$(shown_word "$agent")" "ERROR")"$'\n'
         else
           # Show every state that is set; dirty is never hidden (new+dirty / merged+dirty).
           if [ "$new" = true ] && [ "$dirty" = true ]; then gs="new+dirty"
@@ -310,7 +388,7 @@ case "$cmd" in
           elif [ "$dirty" = true ]; then gs="dirty"
           else gs="clean"; fi
           reap=""; [ "$reapable" = true ] && reap="  (reapable)"
-          table="$table$(printf '%-16s %-12s +%s/-%s  turn:%-10s %-8s%s\n' "$agent" "$gs" "$ahead" "$behind" "$turn" "$activity" "$reap")"$'\n'
+          table="$table$(printf '%-16s %-12s +%s/-%s  turn:%-10s %-8s%s\n' "$(shown_word "$agent")" "$gs" "$ahead" "$behind" "$(shown_word "$turn")" "$activity" "$reap")"$'\n'
         fi
       fi
     done < "$reg"
@@ -319,7 +397,7 @@ case "$cmd" in
       printf '{"schema_version":1,"project":"%s","session":"%s","base":"%s","activity_confidence":"heuristic","agents":[%s]}\n' \
         "$(jesc "$project")" "$(jesc "$project")" "$(jesc "${base:-auto}")" "$emit_json"
     else
-      printf 'project=%s session=%s base=%s  (activity is a heuristic)\n' "$project" "$project" "${base:-auto}"
+      printf 'project=%s session=%s base=%s  (activity is a heuristic)\n' "$project" "$project" "$(shown_word "${base:-auto}")"
       printf '%s' "$table"
     fi
     ;;

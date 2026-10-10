@@ -9,6 +9,9 @@ the real quirks it must not trust, so it runs on every host:
   - list-windows -t =<s> -F <fmt>       one row per window, names/commands printed RAW (a newline
                                         in one splits it over several lines, as real tmux does);
                                         #{session_windows} is the true window count
+  - list-panes -t @<id> -F <fmt>        one row per pane of that window (#{window_panes} is the
+                                        true pane count; commands printed RAW); the window's
+                                        list-windows #{pane_current_command} is its ACTIVE pane's
   - capture-pane -p -t <target>         exact resolution; a missing window errors (like real tmux)
   - display-message -p -t <target> fmt  the real QUIRK: a missing window silently falls back to
                                         the session's current window and exits 0
@@ -29,6 +32,11 @@ probe's verdict decides whether they read reapable:
           live agent window in that session reads unknown and is NOT reapable
   twin:   another window's pane command holds raw newlines forging a second facts row for the
           agent's window id -> unknown, not reapable
+  split:  the agent's window is split; its ACTIVE pane is an idle shell and the agent CLI runs in
+          the other pane -> working, not reapable (the active-pane reads alone said idle)
+  splitforge: a pane command with raw newlines makes the pane listing inconsistent -> unknown,
+          not reapable
+  nosess: no tmux session for the project at all -> unknown; provably absent, so reapable
 It also asserts the probe never addresses a window by NAME (the fallback-prone target form).
 """
 from __future__ import annotations
@@ -66,10 +74,11 @@ while args:
     else:
         pos.append(a)
 
-def render(fmt, w, count):
+def render(fmt, w, count, pane_cmd=None):
     vals = {"window_id": w["id"], "window_name": w["name"], "window_index": str(w["index"]),
-            "window_activity": str(w["activity"]), "pane_current_command": w["cmd"],
-            "session_windows": str(count)}
+            "window_activity": str(w["activity"]),
+            "pane_current_command": w["cmd"] if pane_cmd is None else pane_cmd,
+            "session_windows": str(count), "window_panes": str(len(w.get("panes", [w["cmd"]])))}
     return re.sub(r"#\{([a-z_]+)\}", lambda m: vals.get(m.group(1), ""), fmt)
 
 def session_of(target):
@@ -112,6 +121,14 @@ if sub == "list-windows":
             rows.append(dict(w, cmd=w["facts_dup"]))
     for w in rows:
         sys.stdout.write(render(fmt, w, len(rows)) + "\n")
+    sys.exit(0)
+if sub == "list-panes":
+    w = strict(t) if t.startswith("@") else None
+    if w is None:
+        sys.stderr.write("can't find window\n"); sys.exit(1)
+    fmt = opts.get("-F", "")
+    for cmd in w.get("panes", [w["cmd"]]):
+        sys.stdout.write(render(fmt, w, 0, cmd) + "\n")
     sys.exit(0)
 if sub == "capture-pane":
     w = strict(t)
@@ -169,8 +186,14 @@ try:
             win("@6", 7, "waiting-work", "python", BUSY_CAPTURE),
             win("@7", 8, "waiting-gone", "bash", SHELL_CAPTURE, capture_fails=True),
             win("@8", 9, "waiting-vanish", "bash", SHELL_CAPTURE, names_only=True),
-            win("@9", 10, "waiting-nocmd", "", SHELL_CAPTURE),
+            # the window listing has no command for its active pane (the pane listing alone would
+            # read a shell): the window-level check must hold it on its own
+            win("@9", 10, "waiting-nocmd", "", SHELL_CAPTURE, panes=["bash"]),
             win("@10", 11, "waiting-twofacts", "bash", SHELL_CAPTURE, facts_dup="python"),
+            # split: the ACTIVE pane (what list-windows and capture-pane read) is an idle shell;
+            # the agent CLI runs in the other pane.
+            win("@11", 12, "waiting-split", "bash", SHELL_CAPTURE, panes=["bash", "python"]),
+            win("@12", 13, "waiting-splitforge", "bash", SHELL_CAPTURE, panes=["bash", "x\nbash"]),
         ]},
         # a name with raw newlines: list-windows prints "<n>\t@21\tdecoy" and then a forged
         # "<n>\t@20\tforged-forge" row (count prefix included, so only the line count betrays it)
@@ -208,12 +231,15 @@ try:
 
     projects = {
         "waiting": ("waiting-blk", "waiting-ghost", "waiting-dup", "waiting-idle", "waiting-work",
-                    "waiting-gone", "waiting-vanish", "waiting-nocmd", "waiting-twofacts"),
+                    "waiting-gone", "waiting-vanish", "waiting-nocmd", "waiting-twofacts",
+                    "waiting-split", "waiting-splitforge"),
         "forged": ("forged-forge", "forged-live"),
         "twin": ("twin-agent",),
+        "nosess": ("nosess-agent",),  # no tmux session at all
     }
     MERGED = {"waiting-ghost", "waiting-dup", "waiting-gone", "waiting-vanish", "waiting-nocmd",
-              "waiting-twofacts", "forged-live", "twin-agent"}
+              "waiting-twofacts", "waiting-split", "waiting-splitforge", "forged-live", "twin-agent",
+              "nosess-agent"}
     home = base / "sessions"; home.mkdir()
     for project, names in projects.items():
         rows = []
@@ -283,6 +309,12 @@ try:
     nocmd = agents["waiting-nocmd"]
     assert nocmd["activity"] == "unknown" and nocmd["reapable"] is False, \
         f"a window with no readable command must read unknown and never be reapable: {nocmd}"
+    split = agents["waiting-split"]
+    assert split["activity"] == "working" and split["reapable"] is False, \
+        f"a split window running the agent in a pane that is not active must read working: {split}"
+    splitforge = agents["waiting-splitforge"]
+    assert splitforge["activity"] == "unknown" and splitforge["reapable"] is False, \
+        f"an inconsistent pane listing must read unknown and not reapable: {splitforge}"
     twofacts = agents["waiting-twofacts"]
     assert twofacts["activity"] == "unknown" and twofacts["reapable"] is False, \
         f"an inconsistent facts listing (id twice) must read unknown and not reapable: {twofacts}"
@@ -300,13 +332,18 @@ try:
     assert twin["activity"] == "unknown" and twin["reapable"] is False, \
         f"a newline-forged facts row for the same window id must read unknown: {twin}"
 
+    agents = status("nosess")
+    nosess = agents["nosess-agent"]
+    assert nosess["activity"] == "unknown" and nosess["reapable"] is True, \
+        f"no tmux session for the project reads unknown and, provably absent, stays reapable: {nosess}"
+
     # Never address a window by NAME: that is the target form tmux resolves with a fallback.
     calls = [json.loads(line) for line in calls_log.read_text().splitlines()]
     assert calls, "the fake tmux must have been called"
     for argv in calls:
         if "-t" in argv:
             target = argv[argv.index("-t") + 1]
-            assert target in ("=waiting", "=forged", "=twin") or (target.startswith("@") and target[1:].isdigit()), \
+            assert target in ("=waiting", "=forged", "=twin", "=nosess") or (target.startswith("@") and target[1:].isdigit()), \
                 f"probe must target the session or a window id, never a window name: {argv}"
         assert argv[0] != "display-message", f"probe must not trust display-message: {argv}"
 

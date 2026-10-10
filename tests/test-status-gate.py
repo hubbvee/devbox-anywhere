@@ -347,22 +347,28 @@ for label in ("symlink-to-dir", "dir"):
         rotated.unlink()
     rotated.write_text("")
 
-# Concurrent requests during a rotation: every allow succeeds, exactly one gate rotates, and
-# .1 keeps the whole old generation.
-for trial in range(5):
+# Concurrent requests during a rotation: every allow succeeds (a log rotated away between one
+# gate's checks is a fresh log, not a failure), nothing leaks to the client's stderr, exactly one
+# gate rotates, and .1 keeps the whole old generation. 24 gates x 10 trials: with 6 x 5 the
+# vanished-log race (a valid status read denied as log-failed) slipped through most runs.
+CONCURRENT = 24
+for trial in range(10):
     big = b"x" * (262144 + 100)
     log.write_bytes(big)
     rotated.unlink()
     procs = [subprocess.Popen([str(gate)], env=gate_env("list"), cwd=work, stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for _ in range(6)]
-    codes = [proc.wait(timeout=60) for proc in procs]
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for _ in range(CONCURRENT)]
+    outcomes = [(proc.wait(timeout=60), proc.stderr.read()) for proc in procs]
     for proc in procs:
         proc.stderr.close()
-    assert codes == [0] * 6, f"gate_log_rotation_concurrent:rc:{codes}"
+    codes = [code for code, _ in outcomes]
+    assert codes == [0] * CONCURRENT, f"gate_log_rotation_concurrent:rc:{codes}"
+    assert all(err == b"" for _, err in outcomes), f"gate_log_rotation_concurrent:stderr:{[e for _, e in outcomes if e][:2]}"
     old = rotated.read_bytes()
     assert old.startswith(big) and not lock.exists(), f"gate_log_rotation_concurrent:generation:{len(old)}"
     tail = old[len(big):].decode() + log.read_text()
-    assert tail.count("\tallow\tlist\t") == 6, f"gate_log_rotation_concurrent:lines:{tail!r}"
+    assert tail.count("\tallow\tlist\t") == CONCURRENT, f"gate_log_rotation_concurrent:lines:{tail!r}"
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600, "gate_log_rotation_concurrent:mode"
 rotated.unlink()
 
 # XDG_STATE_HOME is honored when it is a safe absolute path.

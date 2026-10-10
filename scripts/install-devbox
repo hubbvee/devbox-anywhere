@@ -455,13 +455,22 @@ for attempt in $(seq 1 30); do
   sleep 2
 done
 
+# A named instance's ssh/ directory is the container's ~/.ssh, writable by anything running in
+# it: an agent can swap authorized_keys for a symlink that host root would follow to a host
+# file. So for an instance the key goes in from INSIDE, as coder (docs/14 step 3).
+if [[ -n $INSTANCE ]]; then
+  key_hint="sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default exec -i --user coder $CONTAINER sh -c 'cat >> /home/coder/.ssh/authorized_keys'
+    (as coder inside the instance; never append to $DATA_ROOT/ssh/authorized_keys as host root)"
+else
+  key_hint="sudo sh -c 'cat >> \"$DATA_ROOT/ssh/authorized_keys\"'"
+fi
 cat <<EOF
 
 Installation complete.
   Browser (local/server): http://$WEB_BIND:$WEB_PORT
   Password file: $ENV_FILE
   Read password locally: sudo sed -n 's/^DEVBOX_PASSWORD=//p' '$ENV_FILE'
-  Add an SSH public key: sudo sh -c 'cat >> "$DATA_ROOT/ssh/authorized_keys"'
+  Add an SSH public key: $key_hint
   Status: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default compose ${PROJECT:+-p $PROJECT }--env-file '$ENV_FILE' -f '$REPO_ROOT/stack/docker-compose.yml' ps
 EOF
 

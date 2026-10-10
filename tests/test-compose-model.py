@@ -337,5 +337,11 @@ if docker:
             validate_rendered(rendered.stdout, "devbox-myapp", "/data/devbox-myapp", "9080", "9022")
             if json.loads(rendered.stdout).get("name") != "devbox-myapp":
                 fail("instance env file does not pin the project name")
+    else:
+        # Named, never silent: the project-name contract above (default "stack", instance
+        # COMPOSE_PROJECT_NAME) was NOT exercised on this host.
+        print("compose_model_docker=SKIP (docker compose unavailable)")
+else:
+    print("compose_model_docker=SKIP (docker not installed)")
 
 print("compose_model=PASS")
