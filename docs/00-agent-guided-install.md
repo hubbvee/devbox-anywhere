@@ -117,6 +117,10 @@ off by default, binds `127.0.0.1:8081` only, and generates its own owner-only pa
 Treat enabling it as a privileged/network change that needs explicit approval, and never
 expose port 8081 publicly. See [12 — Browsers & auth](12-browser-and-auth.md).
 
+To run a second, separate devbox next to the first (for example, for a bot's agents), add
+`--instance NAME --web-port N --ssh-port N`. Without `--instance` nothing changes. See
+[03 — Running a second instance](03-deploy-the-devbox.md#running-a-second-instance).
+
 The agent should retain the command output but redact any accidental credential material.
 It must verify the final status command printed by the installer instead of assuming a
 successful build means a healthy service.
