@@ -461,6 +461,23 @@ assert rows["edge-broken"].split()[1] == "ERROR", "status_broken_worktree_error:
 assert "(reapable)" in rows["edge-ok"] and "(reapable)" not in rows["edge-free"], f"setup:{rows}"
 assert rows["edge-x?]0;pwned??"].split()[1] == "MISSING", f"status_table_printable:row:{rows}"
 
+# Registry rows are read byte-wise. In a UTF-8 locale, bash 5's `read` joins a row that ends in a
+# truncated UTF-8 sequence with the next row, which hid the next agent from the board and `list`.
+# The behavior check reproduces only on bash 5 (bash 3.2 reads bytes anyway), so every `read` in
+# the tool is also pinned to LC_ALL=C statically.
+for no, line in enumerate(TOOL.read_text().splitlines(), 1):
+    if " read -r " in line:
+        assert "LC_ALL=C IFS=" in line, f"status_registry_read_bytewise:static:{no}:{line.strip()}"
+with (ehome / "trunc.tsv").open("wb") as reg_file:
+    reg_file.write(b"trunc-a\t/nonexistent\tb\xe2\x82\ntrunc-b\t/nonexistent\tb\n")
+utf8_env = hermetic(wt_env(ehome, ewt_root, erepo) | {"DEVBOX_STATUS_BASE": "main", "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"})
+tr = subprocess.run(["bash", str(TOOL), "status", "trunc", "--json"], env=utf8_env, capture_output=True)
+assert tr.returncode == 0, f"status_registry_read_bytewise:rc:{tr.returncode}:{tr.stderr!r}"
+tagents = sorted(a["agent"] for a in json.loads(tr.stdout.decode("utf-8"))["agents"])
+assert tagents == ["trunc-a", "trunc-b"], f"status_registry_read_bytewise:json:{tagents}"
+tl = subprocess.run(["bash", str(TOOL), "list"], env=utf8_env, capture_output=True)
+assert tl.returncode == 0 and b"trunc-b" in tl.stdout, f"status_registry_read_bytewise:list:{tl.stdout[-300:]!r}"
+
 # devbox-turn failing (absent state, a crash, anything) reads "unknown", never "free".
 fake_bin = ebase / "bin"; fake_bin.mkdir()
 shutil.copyfile(TOOL, fake_bin / "devbox-session")

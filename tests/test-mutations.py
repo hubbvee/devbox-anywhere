@@ -67,7 +67,7 @@ def mutated(
 # missing) must turn the fake-tmux test red: an agent with no window would report another's activity.
 ACTIVITY_WINDOW_PROOF = r'''        wins=$(tmux_rows "$1" "#{window_id}${tab}#{window_name}") || { printf 'unknown held'; return; }
         wid=""; hits=0
-        while IFS= read -r wl; do
+        while LC_ALL=C IFS= read -r wl; do
           case "$wl" in @*"$tab"*) : ;; *) printf 'unknown held'; return ;; esac
           [ "${wl#*"$tab"}" = "$2" ] || continue
           hits=$((hits + 1)); wid=${wl%%"$tab"*}
@@ -78,7 +78,7 @@ ACTIVITY_WINDOW_PROOF = r'''        wins=$(tmux_rows "$1" "#{window_id}${tab}#{w
         # Facts for that id only (no names in this format). A window gone since the listing => held.
         meta=$(tmux_rows "$1" "#{window_id}${tab}#{window_activity}${tab}#{pane_current_command}") || { printf 'unknown held'; return; }
         mrow=""; mn=0
-        while IFS= read -r wl; do
+        while LC_ALL=C IFS= read -r wl; do
           if [ "${wl%%"$tab"*}" = "$wid" ]; then mn=$((mn + 1)); mrow=${wl#*"$tab"}; fi
         done <<< "$meta"
         [ "$mn" -eq 1 ] || { printf 'unknown held'; return; }
@@ -96,7 +96,7 @@ ACTIVITY_WINDOW_PROOF = r'''        wins=$(tmux_rows "$1" "#{window_id}${tab}#{w
         case "$pn" in ''|*[!0-9]*) printf 'unknown held'; return ;; esac
         [ "$pn" -ge 1 ] && [ "$(printf '%s' "$panes" | grep -c '')" -eq "$pn" ] || { printf 'unknown held'; return; }
         pi=0; pbusy=""
-        while [ "$pi" -lt "$pn" ] && IFS= read -r pl; do
+        while [ "$pi" -lt "$pn" ] && LC_ALL=C IFS= read -r pl; do
           pi=$((pi + 1))
           case "$pl" in *"$tab"?*) : ;; *) printf 'unknown held'; return ;; esac
           case "${pl#*"$tab"}" in sh|bash|dash|zsh|-sh|-bash|-zsh|fish|tmux) : ;; *) pbusy=1 ;; esac
@@ -267,6 +267,7 @@ CASES = [
     # Re-review round: each fail-closed branch or escape below survived its revert before.
     ("status-json-utf8-check-iconv", "scripts/devbox-session", '          utf8_ok "$_s" || _hi=esc ;;', """          printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || _hi=esc ;;""", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
     ("status-json-utf8-above-max", "scripts/devbox-session", 'elif [ "$_b" -eq 244 ]; then _need=3; _hi=143\n', 'elif [ "$_b" -eq 244 ]; then _need=3\n', ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-registry-read-locale", "scripts/devbox-session", "    while LC_ALL=C IFS=$(printf '\\t') read -r agent worktree branch fork rest; do\n", "    while IFS=$(printf '\\t') read -r agent worktree branch fork rest; do\n", ["python3", "tests/test-session-status.py"], "status_registry_read_bytewise"),
     ("status-json-quote-raw", "scripts/devbox-session", """          '"') _o="$_o\\\\\\"" ;;\n""", "", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
     ("status-json-backslash-raw", "scripts/devbox-session", """          '\\') _o="$_o\\\\\\\\" ;;\n""", "", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
     ("status-turn-free-any-worktree", "scripts/devbox-session", """"free: $1") printf 'free'; return ;;""", """free*) printf 'free'; return ;;""", ["python3", "tests/test-session-status.py"], "turn_free_other_worktree_reads_unknown"),

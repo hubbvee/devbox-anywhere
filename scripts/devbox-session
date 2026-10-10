@@ -70,7 +70,9 @@ case "$cmd" in
       found=1
       project=$(basename "$reg" .tsv)
       printf 'project=%s session=%s\n' "$(shown_word "$project")" "$(shown_word "$project")"
-      while IFS=$(printf '\t') read -r agent worktree branch rest; do
+      # Every read is byte-wise (LC_ALL=C): in a UTF-8 locale, bash 5's read joins a row that ends in
+      # a truncated UTF-8 sequence with the next row, hiding that agent.
+      while LC_ALL=C IFS=$(printf '\t') read -r agent worktree branch rest; do
         [ -n "${agent:-}" ] || continue
         printf '  agent=%s window=%s worktree=%s branch=%s\n' "$(shown_word "$agent")" "$(shown_word "$agent")" "$(shown "$worktree")" "$(shown "$branch")"
       done < "$reg"
@@ -100,7 +102,7 @@ case "$cmd" in
     # Look the agent up; fail closed on missing, duplicate, or malformed rows.
     matches=0
     m_worktree=; m_branch=
-    while IFS=$(printf '\t') read -r r_agent r_worktree r_branch r_fork r_rest; do
+    while LC_ALL=C IFS=$(printf '\t') read -r r_agent r_worktree r_branch r_fork r_rest; do
       [ -n "${r_agent:-}" ] || continue
       # A well-formed row is 3 fields (legacy) or 4 (agent/worktree/branch/fork_sha). The 4th
       # column is the optional fork SHA written by devbox-worktree; reject a 5th column.
@@ -269,7 +271,7 @@ case "$cmd" in
         # resolve exactly or not at all. display-message is not used. Failure => unknown.
         wins=$(tmux_rows "$1" "#{window_id}${tab}#{window_name}") || { printf 'unknown held'; return; }
         wid=""; hits=0
-        while IFS= read -r wl; do
+        while LC_ALL=C IFS= read -r wl; do
           case "$wl" in @*"$tab"*) : ;; *) printf 'unknown held'; return ;; esac
           [ "${wl#*"$tab"}" = "$2" ] || continue
           hits=$((hits + 1)); wid=${wl%%"$tab"*}
@@ -280,7 +282,7 @@ case "$cmd" in
         # Facts for that id only (no names in this format). A window gone since the listing => held.
         meta=$(tmux_rows "$1" "#{window_id}${tab}#{window_activity}${tab}#{pane_current_command}") || { printf 'unknown held'; return; }
         mrow=""; mn=0
-        while IFS= read -r wl; do
+        while LC_ALL=C IFS= read -r wl; do
           if [ "${wl%%"$tab"*}" = "$wid" ]; then mn=$((mn + 1)); mrow=${wl#*"$tab"}; fi
         done <<< "$meta"
         [ "$mn" -eq 1 ] || { printf 'unknown held'; return; }
@@ -298,7 +300,7 @@ case "$cmd" in
         case "$pn" in ''|*[!0-9]*) printf 'unknown held'; return ;; esac
         [ "$pn" -ge 1 ] && [ "$(printf '%s' "$panes" | grep -c '')" -eq "$pn" ] || { printf 'unknown held'; return; }
         pi=0; pbusy=""
-        while [ "$pi" -lt "$pn" ] && IFS= read -r pl; do
+        while [ "$pi" -lt "$pn" ] && LC_ALL=C IFS= read -r pl; do
           pi=$((pi + 1))
           case "$pl" in *"$tab"?*) : ;; *) printf 'unknown held'; return ;; esac
           case "${pl#*"$tab"}" in sh|bash|dash|zsh|-sh|-bash|-zsh|fish|tmux) : ;; *) pbusy=1 ;; esac
@@ -335,7 +337,7 @@ case "$cmd" in
     emit_json=""
     table=""
     first=1
-    while IFS=$(printf '\t') read -r agent worktree branch fork rest; do
+    while LC_ALL=C IFS=$(printf '\t') read -r agent worktree branch fork rest; do
       [ -n "${agent:-}" ] || continue
       missing=false; broken=false; dirty=false; ahead=0; behind=0; merged=false; new=false; turn="free"; reapable=false; activity=unknown
       porcelain=""

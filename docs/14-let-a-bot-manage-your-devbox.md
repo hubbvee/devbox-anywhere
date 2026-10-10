@@ -551,8 +551,10 @@ reads `~/.ssh/authorized_keys2`, and a root agent can add an sshd drop-in that n
 another key file), the helpers and anything else under `~/.local` (its `bin` comes first on
 `PATH`, so an extra file there shadows system tools), the settings and hooks under
 `~/.claude` and `~/.codex`, the repositories' `.git/hooks`, and the container's own system
-files. `start` keeps all of that, and so does re-running the installer: its `up -d` leaves
-an unchanged container as it is. Instead:
+files. `start` keeps all of that. Re-running the installer is no fix either: depending on
+your Docker version it may keep the container as it is, and even when it replaces the
+container, everything under the data root comes back exactly as the agents left it.
+Instead:
 
 1. Stop the instance and discard its container (this removes the container's own files,
    not the data root):
