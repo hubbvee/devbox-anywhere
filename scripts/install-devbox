@@ -127,11 +127,13 @@ STATE_DIR=$DATA_ROOT/install
 ENV_FILE=$STATE_DIR/compose.env
 # Non-secret instance settings persisted in compose.env (Compose reads the container name and
 # ports from them; the harness reads them back). Empty for the default instance, whose file
-# keeps exactly its historical contents.
+# keeps exactly its historical contents. COMPOSE_PROJECT_NAME is defense in depth: a manual
+# `compose --env-file` that forgets -p still targets this instance's project, never "stack".
 instance_settings=
 if [[ -n $INSTANCE ]]; then
   instance_settings="DEVBOX_INSTANCE=$INSTANCE
 DEVBOX_PROJECT=$PROJECT
+COMPOSE_PROJECT_NAME=$PROJECT
 DEVBOX_CONTAINER=$CONTAINER
 DEVBOX_WEB_PORT=$WEB_PORT
 DEVBOX_SSH_PORT=$SSH_PORT"
@@ -288,13 +290,17 @@ fi
 if [[ -n $INSTANCE ]]; then
   # Never adopt a container this instance did not create: an existing devbox-NAME (or its
   # browser container) must carry this instance's Compose project label, or we stop before
-  # Compose could recreate it. One listing of every container; any unexpected shape fails.
+  # Compose could recreate it. Compose also adopts by project label, not by name, so any OTHER
+  # container already labeled with this project could be recreated (stopped and removed) by
+  # `up`; refuse that too. One listing of every container; any unexpected shape fails.
   container_list=$("${docker_cmd[@]}" container ls --all --format '{{.Names}} {{.Label "com.docker.compose.project"}}') \
     || die "could not list existing containers"
   while read -r listed_name listed_project listed_extra; do
     if [[ $listed_name == "$CONTAINER" || $listed_name == "$BROWSER_CONTAINER" ]]; then
       [[ $listed_project == "$PROJECT" && -z $listed_extra ]] \
         || die "container $listed_name exists but is not managed by Compose project $PROJECT; refusing to touch it"
+    elif [[ $listed_project == "$PROJECT" ]]; then
+      die "container $listed_name already belongs to Compose project $PROJECT; refusing to recreate it"
     fi
   done <<<"$container_list"
   unset container_list listed_name listed_project listed_extra
@@ -312,9 +318,12 @@ if [[ -n $INSTANCE ]]; then
   command -v ss >/dev/null || die "ss is required to check that the chosen ports are free"
   listening=$(ss -Hltn) || die "could not list listening TCP ports"
   listening_ports=
-  while read -r _ _ _ local_address _; do
-    [[ -n $local_address ]] || continue
-    listened=${local_address##*:}
+  # Every non-empty line must be "LISTEN RECV-Q SEND-Q LOCAL:PORT PEER ...": a short, wrapped or
+  # unexpected line is never skipped (it could hide a listener on a chosen port).
+  while read -r -a ss_fields; do
+    ((${#ss_fields[@]})) || continue
+    ((${#ss_fields[@]} >= 5)) && [[ ${ss_fields[0]} == LISTEN ]] || die "unexpected listening socket line from ss"
+    listened=${ss_fields[3]##*:}
     matches "$listened" '^[0-9]+$' || die "unexpected listening socket line from ss"
     listening_ports="$listening_ports $listened"
   done <<<"$listening"
@@ -322,7 +331,7 @@ if [[ -n $INSTANCE ]]; then
     [[ " $owned_ports " != *" $port "* ]] || continue
     [[ "$listening_ports " != *" $port "* ]] || die "host port $port is already in use"
   done
-  unset owned_ports listening listening_ports local_address listened port
+  unset owned_ports listening listening_ports ss_fields listened port
 fi
 
 tmp_env=$(mktemp "$STATE_DIR/compose.env.XXXXXX")

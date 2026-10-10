@@ -238,6 +238,26 @@ for command_args in (["preflight"], ["verify"], ["diagnose"], ["plan", "--approv
         if bad_name:
             assert bad_name not in rejected_report["error"]["message"], "harness_instance_redaction"
 
+# A repeated --instance or port option is refused like the installer's once(), never last-wins,
+# and the rejected value is never echoed.
+for repeated in (
+    ["verify", "--json", "--instance", "myapp", "--instance", "other"],
+    ["diagnose", "--json", "--instance", "myapp", "--instance", "other"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--instance", "other"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--web-port", "9090"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--ssh-port", "9023"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022",
+     "--with-browser", "--browser-port", "9081", "--browser-port", "9082"],
+):
+    repeated_result = run(*repeated)
+    assert repeated_result.returncode == 2, f"harness_option_repeated:{repeated!r}"
+    repeated_report = json.loads(repeated_result.stdout)
+    assert repeated_report["ok"] is False and repeated_report["command"] == repeated[0], f"harness_option_repeated:{repeated!r}"
+    assert repeated[-1] not in repeated_result.stdout + repeated_result.stderr, f"harness_option_repeated_redaction:{repeated!r}"
+text_repeated = run("plan", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--instance", "other")
+assert text_repeated.returncode == 2 and "--instance may be given only once" in text_repeated.stderr, "harness_option_repeated:text"
+assert "other" not in text_repeated.stdout + text_repeated.stderr, "harness_option_repeated_redaction:text"
+
 # plan --instance: the install command carries the instance and its ports; nothing else changes.
 instance_plan = run("plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022")
 assert instance_plan.returncode == 0, "harness_instance_plan: " + instance_plan.stdout + instance_plan.stderr
@@ -303,6 +323,7 @@ INSTANCE_ENV = (
     "DEVBOX_BROWSER_PASSWORD=TEST_SECRET_MUST_NOT_APPEAR\n"
     "DEVBOX_INSTANCE=myapp\n"
     "DEVBOX_PROJECT=devbox-myapp\n"
+    "COMPOSE_PROJECT_NAME=devbox-myapp\n"
     "DEVBOX_CONTAINER=devbox-myapp\n"
     "DEVBOX_WEB_PORT=9080\n"
     "DEVBOX_SSH_PORT=9022\n"
@@ -411,6 +432,8 @@ with tempfile.TemporaryDirectory() as td:
     for old, new in (
         ("DEVBOX_INSTANCE=myapp", "DEVBOX_INSTANCE=other"),
         ("DEVBOX_PROJECT=devbox-myapp", "DEVBOX_PROJECT=stack"),
+        ("COMPOSE_PROJECT_NAME=devbox-myapp", "COMPOSE_PROJECT_NAME=stack"),
+        ("COMPOSE_PROJECT_NAME=devbox-myapp\n", ""),
         ("DEVBOX_CONTAINER=devbox-myapp", "DEVBOX_CONTAINER=devbox"),
         ("DEVBOX_DATA_ROOT=/data/devbox-myapp", "DEVBOX_DATA_ROOT=/data/devbox"),
         ("DEVBOX_WEB_PORT=9080", "DEVBOX_WEB_PORT=8080"),

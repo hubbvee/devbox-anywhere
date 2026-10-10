@@ -34,7 +34,9 @@ RESERVED_INSTANCES = frozenset({"browser", "default", "devbox"})
 PORT_PATTERN = r"[1-9][0-9]{3,4}"
 DEFAULT_PORTS = frozenset({"8080", "2222", "8081"})
 BASE_SETTINGS = frozenset({"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"})
-INSTANCE_SETTINGS = frozenset({"DEVBOX_INSTANCE", "DEVBOX_PROJECT", "DEVBOX_CONTAINER", "DEVBOX_WEB_PORT", "DEVBOX_SSH_PORT"})
+INSTANCE_SETTINGS = frozenset({
+    "DEVBOX_INSTANCE", "DEVBOX_PROJECT", "COMPOSE_PROJECT_NAME", "DEVBOX_CONTAINER", "DEVBOX_WEB_PORT", "DEVBOX_SSH_PORT",
+})
 
 
 class Target(NamedTuple):
@@ -399,8 +401,8 @@ def deployment_settings(target: Target) -> dict[str, str]:
     if target.instance:
         if not INSTANCE_SETTINGS <= set(settings):
             return {}
-        if (settings["DEVBOX_INSTANCE"], settings["DEVBOX_PROJECT"], settings["DEVBOX_CONTAINER"]) != (
-            target.instance, target.project, target.container,
+        if (settings["DEVBOX_INSTANCE"], settings["DEVBOX_PROJECT"], settings["COMPOSE_PROJECT_NAME"], settings["DEVBOX_CONTAINER"]) != (
+            target.instance, target.project, target.project, target.container,
         ):
             return {}
         if not valid_ports(settings["DEVBOX_WEB_PORT"], settings["DEVBOX_SSH_PORT"], settings.get("DEVBOX_BROWSER_PORT")):
@@ -625,6 +627,16 @@ class HarnessParser(argparse.ArgumentParser):
         self.exit(2, f"ERROR: {message}\n")
 
 
+class Once(argparse.Action):
+    """Store a value, refusing a repeat (argparse is last-wins) like the installer's once()."""
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: Any, option_string: str | None = None) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            # Names only the option, never the rejected value.
+            parser.error(f"{option_string} may be given only once")
+        setattr(namespace, self.dest, values)
+
+
 def parser() -> argparse.ArgumentParser:
     result = HarnessParser(
         prog="devbox-anywhere",
@@ -634,14 +646,14 @@ def parser() -> argparse.ArgumentParser:
     for name in ("preflight", "plan", "verify", "diagnose"):
         command = subcommands.add_parser(name)
         command.add_argument("--json", action="store_true", help="emit schema-versioned JSON")
-        command.add_argument("--instance", help="named instance (install-devbox --instance NAME)")
+        command.add_argument("--instance", action=Once, help="named instance (install-devbox --instance NAME)")
         if name == "plan":
             command.add_argument("--approved-commit", required=True)
             command.add_argument("--expose-ssh", action="store_true")
             command.add_argument("--with-browser", action="store_true")
-            command.add_argument("--web-port")
-            command.add_argument("--ssh-port")
-            command.add_argument("--browser-port")
+            command.add_argument("--web-port", action=Once)
+            command.add_argument("--ssh-port", action=Once)
+            command.add_argument("--browser-port", action=Once)
     return result
 
 

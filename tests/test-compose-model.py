@@ -38,6 +38,7 @@ INSTANCE_SEED = ENV_SEED.replace("DEVBOX_DATA_ROOT=/data/devbox\n", "DEVBOX_DATA
     "DEVBOX_BROWSER_BIND=127.0.0.1\n"
     "DEVBOX_INSTANCE=myapp\n"
     "DEVBOX_PROJECT=devbox-myapp\n"
+    "COMPOSE_PROJECT_NAME=devbox-myapp\n"
     "DEVBOX_CONTAINER=devbox-myapp\n"
     "DEVBOX_WEB_PORT=9080\n"
     "DEVBOX_SSH_PORT=9022\n"
@@ -323,5 +324,18 @@ if docker:
             validate_rendered(rendered.stdout, "devbox-myapp", "/data/devbox-myapp", "9080", "9022")
             if json.loads(rendered.stdout).get("name") != "devbox-myapp":
                 fail("instance project name drifted")
+            # Defense in depth: a manual command with the instance env file but WITHOUT -p still
+            # resolves the instance's project (COMPOSE_PROJECT_NAME), never the default "stack".
+            rendered = subprocess.run(
+                [docker, "compose", "--env-file", str(instance_env), "-f", str(COMPOSE), "config", "--format", "json"],
+                env=clean_env,
+                capture_output=True,
+                text=True,
+            )
+            if rendered.returncode != 0:
+                fail(f"docker compose config failed for an instance without -p: {rendered.stderr.strip()}")
+            validate_rendered(rendered.stdout, "devbox-myapp", "/data/devbox-myapp", "9080", "9022")
+            if json.loads(rendered.stdout).get("name") != "devbox-myapp":
+                fail("instance env file does not pin the project name")
 
 print("compose_model=PASS")

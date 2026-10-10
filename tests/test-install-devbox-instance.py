@@ -60,6 +60,7 @@ for expected in (
     "DEVBOX_DATA_ROOT=/data/devbox-myapp\n",
     "DEVBOX_INSTANCE=myapp\n",
     "DEVBOX_PROJECT=devbox-myapp\n",
+    "COMPOSE_PROJECT_NAME=devbox-myapp\n",
     "DEVBOX_CONTAINER=devbox-myapp\n",
     "DEVBOX_WEB_PORT=9080\n",
     "DEVBOX_SSH_PORT=9022\n",
@@ -123,6 +124,8 @@ for args in (
     ["--instance", "myapp", "--web-port", " 9080", "--ssh-port", "9022"],
     ["--instance", "myapp", "--web-port", "1e4", "--ssh-port", "9022"],
     ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "$((1))"],
+    ["--instance", "myapp", "--web-port", "9080\nDEVBOX_WEB_BIND=0.0.0.0", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022\nDEVBOX_SSH_BIND=0.0.0.0"],
     ["--instance", "myapp", "--web-port", "8080", "--ssh-port", "9022"],
     ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "2222"],
     ["--instance", "myapp", "--web-port", "8081", "--ssh-port", "9022"],
@@ -208,6 +211,7 @@ assert env_lines[1:] == [
     "DEVBOX_BROWSER_PASSWORD=TEST_GENERATED_PASSWORD_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
     "DEVBOX_INSTANCE=myapp",
     "DEVBOX_PROJECT=devbox-myapp",
+    "COMPOSE_PROJECT_NAME=devbox-myapp",
     "DEVBOX_CONTAINER=devbox-myapp",
     "DEVBOX_WEB_PORT=9080",
     "DEVBOX_SSH_PORT=9022",
@@ -245,6 +249,22 @@ assert env_file.read_text().splitlines()[0] == password_line, "instance_rerun_pa
 rerun_records = [json.loads(line) for line in log.read_text().splitlines()][len(records):]
 assert [record["args"] for record in rerun_records] == expected_argv, "instance_docker_exact_order:rerun"
 
+# The re-run exemption covers ONLY the ports this instance recorded: a newly chosen port that is
+# already listening is still refused, before compose.env is rewritten or anything is built.
+recorded_env = env_file.read_text()
+(root / "listening.txt").write_text(
+    "LISTEN 0 4096 127.0.0.1:9080 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:9022 0.0.0.0:*\nLISTEN 0 5 0.0.0.0:9090 0.0.0.0:*\n"
+)
+calls_before = len(log.read_text().splitlines())
+moved = subprocess.run(
+    ["bash", str(installer), "--yes", "--approved-commit", approved, "--instance", "myapp", "--web-port", "9090", "--ssh-port", "9022"],
+    env=env, capture_output=True, text=True,
+)
+assert moved.returncode != 0 and "host port 9090 is already in use" in moved.stderr, "instance_port_collision:rerun_new_port"
+moved_calls = [json.loads(line)["args"] for line in log.read_text().splitlines()][calls_before:]
+assert not any("build" in call or "up" in call for call in moved_calls), "instance_port_collision:rerun_new_port"
+assert env_file.read_text() == recorded_env, "instance_port_collision:rerun_new_port"
+
 # --- 6. Port collision refusal: a chosen port already listening stops before any build. --------
 for listening in (
     "LISTEN 0 4096 127.0.0.1:9080 0.0.0.0:*\n",
@@ -266,8 +286,16 @@ assert near.returncode == 0, "instance_port_collision_exact: " + near.stderr
 # The check fails closed when ss fails or prints something unexpected.
 broken, *_ = install(INSTANCE_ARGS, setup=lambda r: (r / "ss-fail").write_text(""))
 assert broken.returncode != 0 and "could not list listening TCP ports" in broken.stderr, "instance_port_check_fail_closed"
-garbled, *_ = install(INSTANCE_ARGS, setup=lambda r: (r / "listening.txt").write_text("LISTEN 0 1 garbage peer\n"))
-assert garbled.returncode != 0 and "unexpected listening socket" in garbled.stderr, "instance_port_check_fail_closed"
+for garbage in (
+    "LISTEN 0 1 garbage peer\n",
+    # Short or wrapped lines must never be skipped: the listener on 9080 would go unseen.
+    "LISTEN 0 4096\n",
+    "LISTEN 0 4096\n    127.0.0.1:9080 0.0.0.0:*\n",
+    "9080\n",
+    "ESTAB 0 0 127.0.0.1:40000 127.0.0.1:9080\n",
+):
+    garbled, *_ = install(INSTANCE_ARGS, setup=lambda r, text=garbage: (r / "listening.txt").write_text(text))
+    assert garbled.returncode != 0 and "unexpected listening socket" in garbled.stderr, f"instance_port_check_fail_closed:{garbage!r}"
 
 # --- 7. Never adopt a container that is not this instance's Compose project. ------------------
 for listing in (
@@ -281,6 +309,18 @@ for listing in (
     assert "is not managed by Compose project devbox-myapp" in hijack.stderr, f"instance_container_hijack:{listing!r}"
     calls = [json.loads(line)["args"] for line in h_log.read_text().splitlines()]
     assert not any("build" in call or "up" in call for call in calls), "instance_container_hijack_built"
+# Compose adopts containers by project label, not by name: any other container already labeled
+# with this instance's project could be recreated (stopped and removed) by `up`.
+for listing in (
+    "devbox devbox-myapp\n",
+    "somebox devbox-myapp\n",
+    "devbox-myapp-devbox-run-0a1b devbox-myapp\n",
+):
+    foreign, _, _, f_log, _, _ = install(INSTANCE_ARGS, setup=lambda r, text=listing: (r / "containers.txt").write_text(text))
+    assert foreign.returncode != 0, f"instance_container_foreign_project:{listing!r}"
+    assert "already belongs to Compose project devbox-myapp" in foreign.stderr, f"instance_container_foreign_project:{listing!r}"
+    calls = [json.loads(line)["args"] for line in f_log.read_text().splitlines()]
+    assert not any("build" in call or "up" in call for call in calls), "instance_container_foreign_project_built"
 unrelated, *_ = install(INSTANCE_ARGS, setup=lambda r: (r / "containers.txt").write_text("devbox stack\ndevbox-myappx other\ndevbox-browser stack\n"))
 assert unrelated.returncode == 0, "instance_container_unrelated: " + unrelated.stderr
 listing_failed, *_ = install(INSTANCE_ARGS, mode="containers-fail")

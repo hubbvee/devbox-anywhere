@@ -11,7 +11,7 @@
 #     IdentityFile ~/.ssh/id_ed25519
 
 DEVBOX_HOST="youruser@YOUR_SERVER_IP"      # VPS host login (for the docker-exec route)
-DEVBOX_LABEL="coolify.resourceName=devbox" # container lookup; compose: use name=devbox
+DEVBOX_LABEL="coolify.resourceName=devbox" # container lookup; compose: swap label=$DEVBOX_LABEL for name=^devbox$ (anchored; ^devbox-NAME$ for a named instance)
 
 # devbox [session] / devbox ls / devbox kill <name>
 # Attach to (or create) a named tmux session in the devbox from your desktop terminal.
