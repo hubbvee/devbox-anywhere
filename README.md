@@ -53,6 +53,25 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.8.0: a separate devbox for your bot, with a read-only door
+
+- **Run a second, isolated devbox** — `install-devbox --instance NAME --web-port N
+  --ssh-port N` creates container `devbox-NAME` with its own data root
+  (`/data/devbox-NAME`), logins, keys, and sessions. Ports are loopback-only by default,
+  validated, and refused if already in use. Without `--instance` nothing changes. See
+  [docs/03](docs/03-deploy-the-devbox.md#running-a-second-instance).
+- **A read-only door for bots** — `devbox-status-gate` is installed with the other
+  helpers but does nothing until a key uses it. One `restrict,command=...` line in
+  `authorized_keys` lets that key ask only for `version`, `list`, or
+  `status <project> [--json]`; everything else is denied (exit 126) and logged. Revoke =
+  delete the line.
+- **Let a bot manage coding work while you keep control** —
+  [docs/14](docs/14-let-a-bot-manage-your-devbox.md): a separate instance with dev-only
+  credentials, your own bridge for writes, human gates, independent verification, a
+  staged autonomy ladder, and a threat model.
+- **Fixed:** the status board now reports `unknown` — not the main shell's state — for an
+  agent whose tmux window does not exist or whose window name is duplicated.
+
 ## New in v1.7.0: agent status board
 
 - **Every agent on a project, at a glance** — `devbox-session status <project>` shows each
@@ -198,14 +217,17 @@ installer-bearing release.
 13. **[Multi-channel sessions with multiple agents](docs/13-multi-channel-multi-agent.md)** —
     one project = one tmux session reachable from any channel; multiple agents in parallel,
     each with its own worktree + branch and a per-worktree one-writer turn-lock.
+14. **[Let a bot manage your devbox](docs/14-let-a-bot-manage-your-devbox.md)** — a
+    separate instance with dev-only credentials, a read-only status gate, your own bridge
+    for writes, and human gates on everything that matters.
 
 ## Repo layout
 
 | Path | What |
 | --- | --- |
-| `docs/00–13` | Agent-guided install plus the full guide in build order |
+| `docs/00–14` | Agent-guided install plus the full guide in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative, `devbox-browser-check` |
-| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-session`, `devbox-turn`, `devbox-worktree`, tmux wrapper, backup cron |
+| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-session`, `devbox-status-gate`, `devbox-turn`, `devbox-worktree`, tmux wrapper, backup cron |
 | `skills/devbox-anywhere/` | Hermes umbrella skill plus eight operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |

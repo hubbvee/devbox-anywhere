@@ -25,6 +25,10 @@ and diagnosis. Hermes users can install the repository-backed umbrella skill fro
 6. Run `sudo ./scripts/install-devbox --yes --approved-commit EXACT_SHA` only from that
    root-owned checkout. The installer must reject a different SHA, dirty tree, non-root
    source owner, or group/other-writable source.
+   For a second, isolated instance, add `--instance NAME --web-port N --ssh-port N` to the
+   same installer command and `--instance NAME` to the harness commands (see
+   `docs/03-deploy-the-devbox.md`); the same approvals apply, and its ports stay
+   loopback-only unless public exposure is separately approved.
 7. Never request, print, paste, log, or commit the generated password, private SSH keys,
    Telegram tokens, provider credentials, or the contents of the generated environment
    file.

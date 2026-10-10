@@ -62,6 +62,9 @@ executable. Run them from any shell in the devbox.
   is a detached tmux session, which works on this image where systemd is present but not PID 1
   (so `hermes gateway install` does not). See `docs/10-telegram-project-topics.md` for the full
   gateway example.
+- `devbox-status-gate` — a read-only forced command for a bot's SSH key: it answers only
+  `version`, `list`, and `status <project> [--json]`, and is inert until an `authorized_keys`
+  line uses it. See `docs/14-let-a-bot-manage-your-devbox.md`.
 
 ## Naming convention
 
@@ -138,7 +141,9 @@ Two kinds of signal, deliberately distinguished:
 - **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the tmux pane
   (`working` = a non-shell foreground command; `idle` = a shell prompt; `blocked` = a known
   waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). When the
-  pane can't be read it is `unknown` — never guessed. `--json` marks this with
+  pane can't be read it is `unknown` — never guessed. That includes an agent whose tmux window
+  does not exist, or whose window name appears more than once in the session: it reads
+  `unknown` rather than borrowing the state of the session's main shell. `--json` marks this with
   `"activity_confidence":"heuristic"`. Do not gate irreversible actions on activity alone.
   **Known limit:** `working` means *any* non-shell foreground process, so an agent CLI
   (claude/codex) sitting idle at its own prompt still reads `working` — its process is always
