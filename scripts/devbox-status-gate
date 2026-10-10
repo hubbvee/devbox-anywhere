@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# devbox-status-gate — read-only SSH forced command for a bot's status key.
+#
+# Lets an outside program (e.g. a hosted bot's bridge) read devbox project status over SSH
+# with a key that can do NOTHING else. Opt-in: nothing changes until you add the key line.
+# Install it inside the devbox as ONE line in ~/.ssh/authorized_keys:
+#
+#   restrict,command="/home/coder/.local/bin/devbox-status-gate" ssh-ed25519 AAAA... my-bot-readonly
+#
+# sshd then runs this gate (through the account's shell with -c) for EVERY connection with
+# that key, whatever the client asked for, and puts the client's request in
+# $SSH_ORIGINAL_COMMAND. "restrict" is REQUIRED: command= alone only forces the command; it
+# does not stop the key from opening port forwards (-L/-R/-D, e.g. to the loopback-only
+# code-server), agent/X11 forwarding, a pty, or ~/.ssh/rc. restrict turns all of those off,
+# including any added by future OpenSSH versions. Optionally pin the bot's source address
+# too: restrict,from="SERVER_ADDRESS",command="...". Revoke by deleting the line.
+#
+# Allowed requests (exact tokens, single ASCII spaces, nothing else):
+#   version                      print this gate's version line (no helper runs)
+#   list                         exec devbox-session list
+#   status <project>             exec devbox-session status <project>
+#   status <project> --json      exec devbox-session status <project> --json
+# <project> follows devbox-session's safe_name rule ([A-Za-z0-9._-]) plus: no leading "-"
+# or ".", 1-64 characters. The whole request is checked against [A-Za-z0-9._ -] BEFORE it is
+# split, so quotes, $, backticks, ;, |, &, <, >, (, ), globs, ~, \, tabs, newlines,
+# non-ASCII, doubled/leading/trailing spaces and everything else (shells, scp, sftp,
+# git-upload-pack, ...) are denied: "devbox-status-gate: denied" on stderr, exit 126, and
+# the request is never echoed back. Arguments given to the gate itself are ignored.
+#
+# What the key can read (devbox-session output; no pane text, no file contents, no env):
+#   list           project names, agent ids (== tmux window names), worktree paths, branches.
+#   status <p>     a table: per agent its id, a state word (new|clean|dirty|merged|...|
+#                  MISSING), +ahead/-behind counts, the turn holder's name (devbox-turn
+#                  identity, default user@host, or free), an activity word (working|idle|
+#                  blocked|unknown) and "(reapable)". No worktree path, no branch.
+#   status <p> --json  the same facts per agent (as missing/dirty/new/merged/reapable flags
+#                  instead of a state word) PLUS its worktree path and branch name. The
+#                  "base" field is always the literal "auto" through this gate
+#                  (DEVBOX_STATUS_BASE is scrubbed, below).
+#   Activity is derived from the pane's foreground command and last line, but no pane text
+#   is ever printed.
+#   errors  devbox-session's stderr, e.g. "unknown project: <project>" (so it can tell
+#           whether a project name exists).
+#
+# Hardening:
+#   - devbox-session is the file BESIDE this gate's resolved path, never looked up on PATH.
+#     It must be a regular executable file (not a symlink), owned by you or root and not
+#     group/world-writable; its directory must be owned by you or root and not
+#     group/world-writable; a devbox-turn beside it (which devbox-session runs) must pass
+#     the same file checks. Anything else fails closed.
+#   - It is exec'd with a fixed argv and a scrubbed environment: env -i with only HOME,
+#     PATH=/usr/bin:/bin and LC_ALL=C. That drops every DEVBOX_* override (notably
+#     DEVBOX_STATUS_ACTIVITY_CMD, which executes a program, plus DEVBOX_SESSION_HOME,
+#     DEVBOX_STATUS_BASE/_STALE and DEVBOX_TURN_*), GIT_*, BASH_ENV, LD_*, TMUX* and any
+#     secrets the account's shell startup files export. sshd's restrict does not pass client
+#     env (except what AcceptEnv allows, e.g. LANG/LC_* on many distros), but defend anyway.
+#     Consequences, by design (these settings redirect where status reads from):
+#       * the gate always reads the DEFAULT registry under $HOME;
+#       * a project whose repo has neither main nor master fails ("cannot resolve base
+#         branch"), because DEVBOX_STATUS_BASE cannot be passed through;
+#       * if you run tmux on a non-default socket (TMUX_TMPDIR) or keep turn locks under a
+#         custom DEVBOX_TURN_STATE, the gate sees activity "unknown" and turn "free", so a
+#         merged, clean agent that is in fact live can read "reapable" here while your own
+#         devbox-session status says otherwise. With such a setup, never reap on the
+#         strength of this gate's "reapable" alone.
+#   - stdin is closed (/dev/null) for the helper.
+#
+# Audit log: one TAB-separated line per request (allowed or denied) appended to
+# ${XDG_STATE_HOME:-$HOME/.local/state}/devbox/gate/status-gate.log: UTC time, allow|deny,
+# the request (printable ASCII only, other bytes -> '?', cut to 200 chars), the SSH_CLIENT
+# address ('-' if none), and a short reason word (the action, or which check denied it).
+# The log lives in its own gate/ directory (created 0700; it must stay yours and not group-
+# or world-writable) because devbox/ itself is shared with the session registry and is often
+# group-writable under a umask of 002: every check and write is made from inside gate/, so a
+# swapped path cannot redirect a line into another file. File 0600; past 256 KiB the log is
+# rotated to status-gate.log.1 (one generation, one rotator at a time). A symlinked or
+# foreign log is never written through. Logging is FAIL-CLOSED for allows: if the line cannot
+# be written the request is denied (so a gate/ directory you loosened denies everything until
+# you chmod 700 it). A deny is always a deny, logged or not.
+# Limit: the log is a convenience record kept inside the same account, not tamper-proof
+# evidence. With one rotated generation, roughly 2,000 long denied requests from the key push
+# every older line out; sshd's own log (wherever your sshd sends it) still records each
+# connection.
+set -eu
+
+GATE_VERSION=1.8.0
+SAFE_PATH=/usr/bin:/bin
+PATH=$SAFE_PATH
+export PATH
+LC_ALL=C
+export LC_ALL
+IFS=$' \t\n'
+umask 077
+
+LOG_MAX_BYTES=262144
+req=${SSH_ORIGINAL_COMMAND-}
+
+# A path we will create files under or vouch for: absolute and from a plain character set
+# (no "..", no whitespace, no shell or glob characters).
+safe_path() {
+  case "$1" in
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *[!A-Za-z0-9._/-]*|*/../*|*/..|*/./*|*/.) return 1 ;;
+  esac
+  return 0
+}
+
+# Owned by the effective user or by root, and not writable by group or others. find -H
+# judges the final target, so symlinks are rejected by their own explicit check, not here.
+owned_not_shared() {
+  [ -O "$1" ] || [ -n "$(find -H "$1" -prune -user 0 -print 2>/dev/null)" ] || return 1
+  shared=$(find -H "$1" -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || return 1
+  [ -z "$shared" ]
+}
+
+# A helper file we are willing to exec (directly or via devbox-session).
+trusted_file() {
+  [ ! -L "$1" ] || return 1
+  [ -f "$1" ] && [ -x "$1" ] || return 1
+  owned_not_shared "$1"
+}
+
+# Append one audit line. Returns nonzero if it could not be written (never echoes anything).
+# A subshell: it pins the log directory as its cwd, so every check and write below acts on
+# that one directory even if a path component is swapped in the meantime.
+audit() (
+  # args: <allow|deny> <reason>
+  state=${XDG_STATE_HOME:-}
+  if [ -z "$state" ]; then
+    safe_path "${HOME:-}" || exit 1
+    state=$HOME/.local/state
+  fi
+  safe_path "$state" || exit 1
+  dir=$state/devbox/gate
+  mkdir -p -- "$dir" 2>/dev/null || exit 1
+  [ ! -L "$dir" ] || exit 1
+  cd -P -- "$dir" 2>/dev/null || exit 1
+  # Only you may create, replace or rename entries here.
+  [ -O ./ ] || exit 1
+  shared=$(find ./ -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || exit 1
+  [ -z "$shared" ] || exit 1
+  log=status-gate.log
+  if [ -e "$log" ] || [ -L "$log" ]; then
+    [ ! -L "$log" ] && [ -f "$log" ] && [ -O "$log" ] || exit 1
+    size=$(wc -c < "$log" 2>/dev/null) || exit 1
+    size=${size//[!0-9]/}
+    if [ "${size:-0}" -gt "$LOG_MAX_BYTES" ]; then
+      # One rotator at a time (mkdir is atomic); a lock left by a killed gate expires after a
+      # minute. Losing the race is fine: the line goes to whichever log is current.
+      lock=status-gate.lock
+      if [ -n "$(find "$lock" -prune -mmin +1 -print 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null || :; fi
+      if mkdir "$lock" 2>/dev/null; then
+        rotated=0
+        size=$(wc -c < "$log" 2>/dev/null) || size=0
+        size=${size//[!0-9]/}
+        if [ "${size:-0}" -le "$LOG_MAX_BYTES" ]; then
+          rotated=1
+        elif [ ! -L "$log.1" ] && { [ ! -e "$log.1" ] || { [ -f "$log.1" ] && [ -O "$log.1" ]; }; }; then
+          mv -f -- "$log" "$log.1" 2>/dev/null && rotated=1
+        fi
+        rmdir "$lock" 2>/dev/null || :
+        [ "$rotated" = 1 ] || exit 1
+      fi
+    fi
+  fi
+  when=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || exit 1
+  shown=$(printf '%s' "${req:0:200}" | LC_ALL=C tr -c ' -~' '?')
+  client=${SSH_CLIENT:-}
+  client=${client%% *}
+  client=$(printf '%s' "${client:0:64}" | LC_ALL=C tr -c '0-9A-Fa-f.:' '?')
+  printf '%s\t%s\t%s\t%s\t%s\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log" 2>/dev/null || exit 1
+  chmod 600 "$log" 2>/dev/null || exit 1
+)
+
+deny() {
+  audit deny "$1" || true
+  printf 'devbox-status-gate: denied\n' >&2
+  exit 126
+}
+
+allow() {
+  audit allow "$1" || deny log-failed
+}
+
+# --- 1. The request: allow-listed characters and length BEFORE any splitting. -----------
+[ -n "$req" ] || deny empty
+case "$req" in
+  *[!A-Za-z0-9._\ -]*) deny charset ;;
+esac
+[ "${#req}" -le 80 ] || deny length
+
+# --- 2. Exact forms only (pattern match, never word-splitting). -------------------------
+json=0
+project=
+case "$req" in
+  version) action=version ;;
+  list) action=list ;;
+  "status "*" --json") action=status; json=1; project=${req#status }; project=${project% --json} ;;
+  "status "*) action=status; project=${req#status } ;;
+  *) deny form ;;
+esac
+
+if [ "$action" = status ]; then
+  # devbox-session's safe_name, tightened: no leading dash or dot, 1-64 chars.
+  case "$project" in
+    ""|.|..) deny project ;;
+    -*|.*) deny project ;;
+    */*|*'\'*) deny project ;;
+    *[!A-Za-z0-9._-]*) deny project ;;
+  esac
+  [ "${#project}" -le 64 ] || deny project
+fi
+
+if [ "$action" = version ]; then
+  allow version
+  printf 'devbox-status-gate %s\n' "$GATE_VERSION"
+  exit 0
+fi
+
+# --- 3. Resolve devbox-session beside this gate's REAL path; never via PATH. ------------
+self=${BASH_SOURCE[0]}
+case "$self" in /*) : ;; *) self=$PWD/$self ;; esac
+hops=0
+while [ -L "$self" ]; do
+  hops=$((hops + 1))
+  [ "$hops" -le 8 ] || deny helper
+  target=$(readlink "$self" 2>/dev/null) || deny helper
+  case "$target" in /*) self=$target ;; *) self=${self%/*}/$target ;; esac
+done
+selfdir=${self%/*}
+[ -n "$selfdir" ] || selfdir=/
+bindir=$(cd -P -- "$selfdir" 2>/dev/null && pwd -P) || deny helper
+safe_path "$bindir" || deny helper
+owned_not_shared "$bindir" || deny helper
+session=$bindir/devbox-session
+trusted_file "$session" || deny helper
+if [ -e "$bindir/devbox-turn" ] || [ -L "$bindir/devbox-turn" ]; then
+  trusted_file "$bindir/devbox-turn" || deny helper
+fi
+safe_path "${HOME:-}" && [ -d "$HOME" ] || deny home
+
+# --- 4. Log, then exec with a fixed argv and a scrubbed environment. --------------------
+allow "$action"
+case "$action" in
+  list) set -- list ;;
+  status)
+    if [ "$json" = 1 ]; then set -- status "$project" --json
+    else set -- status "$project"; fi
+    ;;
+esac
+exec /usr/bin/env -i HOME="$HOME" PATH="$SAFE_PATH" LC_ALL=C "$session" "$@" < /dev/null
