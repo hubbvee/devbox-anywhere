@@ -294,6 +294,20 @@ for mode, label in ((0o770, "group-writable-log-dir"), (0o777, "world-writable-l
     assert r.returncode == 126 and r.stderr == DENIED and read_record() is None, f"gate_allow_fail_closed:{label}"
     assert log.read_bytes() == before, f"gate_allow_fail_closed:{label}:written"
 
+# A log the gate cannot create (gate/ read-only, no log yet) fails closed, and the failed append's
+# shell error -- which names the gate's absolute path -- never reaches the client's stderr.
+if os.geteuid() != 0:  # root ignores the mode
+    saved = tmp / "saved-status-gate.log"
+    log.rename(saved)
+    os.chmod(log.parent, 0o500)
+    clear_record()
+    r = run_gate("list")
+    os.chmod(log.parent, 0o700)
+    created = log.exists()
+    saved.rename(log)
+    assert r.returncode == 126 and r.stderr == DENIED and read_record() is None and not created, \
+        f"gate_allow_fail_closed:read-only-log-dir:{r.returncode}:{r.stderr!r}"
+
 # A symlinked gate/ dir is never followed, even to a dir you own that is also named gate.
 elsewhere = tmp / "elsewhere/gate"
 elsewhere.mkdir(parents=True)

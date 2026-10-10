@@ -12,9 +12,11 @@ field is safe to print (JSON-escaped control bytes, printable-ASCII table).
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 
@@ -43,7 +45,14 @@ def wt(*args: str, home, wt_root, repo) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["bash", str(WT_TOOL), *args], env=wt_env(home, wt_root, repo), capture_output=True, text=True)
 
 
-NO_TMUX_DIR = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-notmux-"))
+def scratch_dir(prefix: str) -> pathlib.Path:
+    # Removed at exit even when an assertion fails (the mutation suite turns this test red often).
+    path = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
+
+
+NO_TMUX_DIR = scratch_dir("devbox-status-notmux-")
 
 
 def hermetic(env: dict[str, str]) -> dict[str, str]:
@@ -75,7 +84,7 @@ def write_stub(path: pathlib.Path, body: str) -> pathlib.Path:
 
 assert TOOL.is_file()
 
-base = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-"))
+base = scratch_dir("devbox-status-")
 repo = base / "repo"; repo.mkdir()
 git("init", "-q", "-b", "main", cwd=repo)
 git("config", "user.email", "t@e", cwd=repo)
@@ -223,7 +232,6 @@ assert not web_index.with_name("index.lock").exists(), "status_index_untouched:l
 assert status("ghost", "--json", home=home, wt_root=wt_root, repo=repo).returncode != 0
 
 # --- missing worktree reported, not crashed ---
-import shutil
 shutil.rmtree(web)
 r = status("webapp", "--json", home=home, wt_root=wt_root, repo=repo, turn_state=turn_state)
 assert r.returncode == 0, "a vanished worktree must not crash status: " + r.stderr
@@ -290,7 +298,7 @@ assert "new+dirty" in h.stdout, "table must show new+dirty, not hide dirty under
 # --- Legacy 3-column registry rows (created before the fork-SHA column existed) ---
 # Every existing user's registry is 3-column; status must still tell a fresh agent from a
 # merged one via the branch reflog, so the reap workflow can never delete a never-started agent.
-lbase = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-legacy-"))
+lbase = scratch_dir("devbox-status-legacy-")
 lrepo = lbase / "repo"; lrepo.mkdir()
 git("init", "-q", "-b", "main", cwd=lrepo)
 git("config", "user.email", "t@e", cwd=lrepo)
@@ -330,7 +338,7 @@ shutil.rmtree(lbase, ignore_errors=True)
 # Edge cases: everything below is written by agents (registry rows, turn locks), so status must
 # fail closed on what it cannot read exactly and print only what is safe to print.
 # ============================================================================
-ebase = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-edge-"))
+ebase = scratch_dir("devbox-status-edge-")
 erepo = ebase / "repo"; erepo.mkdir()
 git("init", "-q", "-b", "main", cwd=erepo)
 git("config", "user.email", "t@e", cwd=erepo)
@@ -370,8 +378,23 @@ key = subprocess.run(["bash", "-c", 'printf %s "$1" | { sha256sum 2>/dev/null ||
 notgit = ebase / "notgit"; notgit.mkdir()
 ctl_agent = b"edge-x\x1b]0;pwned\x07\r"
 ctl_row = ctl_agent + b"\t/nonexistent/\x1b[2K\xff\tb\x7f\n"
+# Not UTF-8, so every byte >= 0x80 is \u00XX-escaped. edge-hi holds what iconv's UTF-8 -> UTF-8
+# pass lets through (a code point above U+10FFFF, 5- and 6-byte forms); edge-hi2 holds surrogates,
+# overlong forms, a stray continuation byte and a truncated sequence. Raw in the output, any of
+# them makes the whole document undecodable.
+HI = {
+    "edge-hi": (b"/nonexistent/\xf4\x90\x80\x80x", b"b\xf8\x88\x80\x80\x80\xfc\x84\x80\x80\x80\x80"),
+    "edge-hi2": (b"/nonexistent/\xed\xa0\x80\xc0\xaf\xe0\x80\xaf\xf0\x80\x80\x80", b"\xc3\xa9\x80b\xe2\x82z"),
+}
+hi_row = b"".join(a.encode() + b"\t" + w + b"\t" + br + b"\n" for a, (w, br) in HI.items())
+# Valid UTF-8 (2- and 4-byte, U+10FFFF itself) is kept as is, not escaped byte by byte.
+utf8_row = "edge-utf8\t/nonexistent/caf\u00e9\tb\U0001F600\U0010FFFF\n".encode()
+# A control byte forces the per-character path; the quote and backslash after it must still be
+# escaped there, or the branch closes its string and forges a second agent object.
+INJ_BRANCH = b'w\x01"},{"agent":"forged","merged":true,"reapable":true,"x":"\\'
+inj_row = b"edge-inj\t/nonexistent\t" + INJ_BRANCH + b"\n"
 with (ehome / "edge.tsv").open("ab") as reg_file:
-    reg_file.write(f"edge-broken\t{notgit}\tagent/edge-broken\n".encode() + ctl_row)
+    reg_file.write(f"edge-broken\t{notgit}\tagent/edge-broken\n".encode() + ctl_row + hi_row + utf8_row + inj_row)
 
 
 def edge_status(*args: str, base_env: bool = True, tool: pathlib.Path = TOOL) -> subprocess.CompletedProcess[bytes]:
@@ -394,6 +417,16 @@ def parsed(r: subprocess.CompletedProcess[bytes]) -> dict[str, dict]:
 
 for base_env in (True, False):
     eag = parsed(edge_status("--json", base_env=base_env))
+    inj = eag.get("edge-inj", {})
+    assert "forged" not in eag and inj.get("branch") == INJ_BRANCH.decode("latin-1"), \
+        f"status_json_control_escaped:inj:{sorted(eag)}:{inj}"
+    for name, (hw, hb) in HI.items():
+        hi = eag.get(name, {})
+        assert hi.get("worktree") == hw.decode("latin-1") and hi.get("branch") == hb.decode("latin-1"), \
+            f"status_json_control_escaped:{name}:{hi}"
+    u8 = eag.get("edge-utf8", {})
+    assert u8.get("worktree") == "/nonexistent/caf\u00e9" and u8.get("branch") == "b\U0001F600\U0010FFFF", \
+        f"status_json_utf8_kept:{u8}"
     assert eag["edge-ok"]["turn"] == "free" and eag["edge-ok"]["reapable"] is True, f"setup:{eag['edge-ok']}"
     # A turn that cannot be read exactly is never "free", so never reapable.
     assert eag["edge-free"]["turn"] == "unknown" and eag["edge-free"]["reapable"] is False, \
@@ -408,11 +441,12 @@ for base_env in (True, False):
     broken = eag["edge-broken"]
     assert broken["error"] is True and broken["missing"] is False and broken["reapable"] is False, \
         f"status_broken_worktree_error:{broken}"
+    assert broken["turn"] == "unknown", f"status_broken_worktree_error:turn:{broken}"
     assert eag["edge-ok"]["error"] is False, eag["edge-ok"]
     # Control bytes are \u-escaped (the value round-trips), invalid UTF-8 bytes too.
     ctl = eag[ctl_agent.decode("latin-1")]
     assert ctl["worktree"] == "/nonexistent/\x1b[2K\u00ff" and ctl["branch"] == "b\x7f", f"status_json_control_escaped:{ctl}"
-assert set(eag) == set(EDGE) | {"edge-broken", ctl_agent.decode("latin-1")}, sorted(eag)
+assert set(eag) == set(EDGE) | {"edge-broken", "edge-utf8", "edge-inj", ctl_agent.decode("latin-1")} | set(HI), sorted(eag)
 
 # The table and `list` print only printable ASCII (no ESC/CR/BEL reaches a terminal or a bot).
 table = edge_status()
@@ -430,11 +464,17 @@ assert rows["edge-x?]0;pwned??"].split()[1] == "MISSING", f"status_table_printab
 # devbox-turn failing (absent state, a crash, anything) reads "unknown", never "free".
 fake_bin = ebase / "bin"; fake_bin.mkdir()
 shutil.copyfile(TOOL, fake_bin / "devbox-session")
-(fake_bin / "devbox-turn").write_text("#!/bin/sh\nprintf 'free: %s\\n' \"$2\"\nexit 1\n")
-(fake_bin / "devbox-turn").chmod(0o755)
-eag = parsed(edge_status("--json", tool=fake_bin / "devbox-session"))
-assert eag["edge-ok"]["turn"] == "unknown" and eag["edge-ok"]["reapable"] is False, f"turn_error_reads_unknown:{eag['edge-ok']}"
-shutil.rmtree(ebase, ignore_errors=True)
-shutil.rmtree(NO_TMUX_DIR, ignore_errors=True)
+# Each fake devbox-turn exits 0 with output that is not exactly a free turn or a held one with an
+# age: it must read "unknown" too. "free:" for ANOTHER worktree is not this worktree's turn.
+FAKE_TURNS = (
+    ("turn_error_reads_unknown", "printf 'free: %s\\n' \"$2\"\nexit 1\n"),
+    ("turn_free_other_worktree_reads_unknown", "printf 'free: /other\\n'\n"),
+    ("turn_held_no_age_reads_unknown", "printf 'held: %s by bob\\n' \"$2\"\n"),
+)
+for label, body in FAKE_TURNS:
+    (fake_bin / "devbox-turn").write_text("#!/bin/sh\n" + body)
+    (fake_bin / "devbox-turn").chmod(0o755)
+    eag = parsed(edge_status("--json", tool=fake_bin / "devbox-session"))
+    assert eag["edge-ok"]["turn"] == "unknown" and eag["edge-ok"]["reapable"] is False, f"{label}:{eag['edge-ok']}"
 
 print("session_status=PASS")

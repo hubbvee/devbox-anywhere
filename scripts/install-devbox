@@ -457,7 +457,10 @@ done
 
 # A named instance's ssh/ directory is the container's ~/.ssh, writable by anything running in
 # it: an agent can swap authorized_keys for a symlink that host root would follow to a host
-# file. So for an instance the key goes in from INSIDE, as coder (docs/14 step 3).
+# file. So for an instance the key goes in from INSIDE, as coder (docs/14 step 3). The default
+# instance's ssh/ is exposed the same way. Its host-root hint is kept byte-identical for
+# compatibility; it is safe only right after a fresh install, before any agent has run, and
+# docs/05 and docs/03 teach the in-container append for later.
 if [[ -n $INSTANCE ]]; then
   key_hint="sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default exec -i --user coder $CONTAINER sh -c 'cat >> /home/coder/.ssh/authorized_keys'
     (as coder inside the instance; never append to $DATA_ROOT/ssh/authorized_keys as host root)"

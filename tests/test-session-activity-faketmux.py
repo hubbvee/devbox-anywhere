@@ -36,6 +36,9 @@ probe's verdict decides whether they read reapable:
           the other pane -> working, not reapable (the active-pane reads alone said idle)
   splitforge: a pane command with raw newlines makes the pane listing inconsistent -> unknown,
           not reapable
+  panenocmd: the pane listing's row for the only pane has no command -> unknown, not reapable
+  panesfail: list-panes fails for the window (listed and readable otherwise) -> unknown, not
+          reapable (never the idle shell the window listing shows)
   nosess: no tmux session for the project at all -> unknown; provably absent, so reapable
 It also asserts the probe never addresses a window by NAME (the fallback-prone target form).
 """
@@ -124,7 +127,7 @@ if sub == "list-windows":
     sys.exit(0)
 if sub == "list-panes":
     w = strict(t) if t.startswith("@") else None
-    if w is None:
+    if w is None or w.get("panes_fail"):
         sys.stderr.write("can't find window\n"); sys.exit(1)
     fmt = opts.get("-F", "")
     for cmd in w.get("panes", [w["cmd"]]):
@@ -194,6 +197,10 @@ try:
             # the agent CLI runs in the other pane.
             win("@11", 12, "waiting-split", "bash", SHELL_CAPTURE, panes=["bash", "python"]),
             win("@12", 13, "waiting-splitforge", "bash", SHELL_CAPTURE, panes=["bash", "x\nbash"]),
+            # the only pane's row carries no command (the window listing alone reads a shell)
+            win("@13", 14, "waiting-panenocmd", "bash", SHELL_CAPTURE, panes=[""]),
+            # list-panes fails although the window listing and capture-pane read an idle shell
+            win("@14", 15, "waiting-panesfail", "bash", SHELL_CAPTURE, panes_fail=True),
         ]},
         # a name with raw newlines: list-windows prints "<n>\t@21\tdecoy" and then a forged
         # "<n>\t@20\tforged-forge" row (count prefix included, so only the line count betrays it)
@@ -232,13 +239,14 @@ try:
     projects = {
         "waiting": ("waiting-blk", "waiting-ghost", "waiting-dup", "waiting-idle", "waiting-work",
                     "waiting-gone", "waiting-vanish", "waiting-nocmd", "waiting-twofacts",
-                    "waiting-split", "waiting-splitforge"),
+                    "waiting-split", "waiting-splitforge", "waiting-panenocmd", "waiting-panesfail"),
         "forged": ("forged-forge", "forged-live"),
         "twin": ("twin-agent",),
         "nosess": ("nosess-agent",),  # no tmux session at all
     }
     MERGED = {"waiting-ghost", "waiting-dup", "waiting-gone", "waiting-vanish", "waiting-nocmd",
-              "waiting-twofacts", "waiting-split", "waiting-splitforge", "forged-live", "twin-agent",
+              "waiting-twofacts", "waiting-split", "waiting-splitforge", "waiting-panenocmd",
+              "waiting-panesfail", "forged-live", "twin-agent",
               "nosess-agent"}
     home = base / "sessions"; home.mkdir()
     for project, names in projects.items():
@@ -315,6 +323,12 @@ try:
     splitforge = agents["waiting-splitforge"]
     assert splitforge["activity"] == "unknown" and splitforge["reapable"] is False, \
         f"an inconsistent pane listing must read unknown and not reapable: {splitforge}"
+    panenocmd = agents["waiting-panenocmd"]
+    assert panenocmd["activity"] == "unknown" and panenocmd["reapable"] is False, \
+        f"a pane row with no command must read unknown and not reapable: {panenocmd}"
+    panesfail = agents["waiting-panesfail"]
+    assert panesfail["activity"] == "unknown" and panesfail["reapable"] is False, \
+        f"a failing pane listing must read unknown and not reapable: {panesfail}"
     twofacts = agents["waiting-twofacts"]
     assert twofacts["activity"] == "unknown" and twofacts["reapable"] is False, \
         f"an inconsistent facts listing (id twice) must read unknown and not reapable: {twofacts}"

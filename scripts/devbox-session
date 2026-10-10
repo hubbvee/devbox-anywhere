@@ -147,6 +147,34 @@ case "$cmd" in
     # agents, so nothing here is trusted to be JSON-safe: backslash and quote are escaped,
     # every control byte (0x00-0x1f, 0x7f) becomes \u00XX, and if the value is not valid UTF-8
     # its bytes >= 0x80 become \u00XX too, so the document always parses.
+    #
+    # UTF-8 validity is checked here, byte by byte, to RFC 3629 (no overlong forms, no
+    # surrogates, nothing above U+10FFFF, no 5/6-byte forms), not with iconv: glibc and macOS
+    # iconv both pass U+110000 and 5/6-byte forms through UTF-8 -> UTF-8, and macOS iconv even
+    # exits 0 for some invalid input once a valid character precedes it.
+    utf8_ok() (
+      LC_ALL=C
+      _s=$1; _i=0; _need=0; _lo=128; _hi=191
+      while [ "$_i" -lt "${#_s}" ]; do
+        printf -v _b '%d' "'${_s:_i:1}" 2>/dev/null || exit 1
+        _b=$(( _b & 255 ))
+        _i=$((_i + 1))
+        if [ "$_need" -gt 0 ]; then
+          [ "$_b" -ge "$_lo" ] && [ "$_b" -le "$_hi" ] || exit 1
+          _need=$((_need - 1)); _lo=128; _hi=191
+        elif [ "$_b" -lt 128 ]; then :
+        elif [ "$_b" -ge 194 ] && [ "$_b" -le 223 ]; then _need=1
+        elif [ "$_b" -eq 224 ]; then _need=2; _lo=160
+        elif [ "$_b" -eq 237 ]; then _need=2; _hi=159
+        elif [ "$_b" -ge 225 ] && [ "$_b" -le 239 ]; then _need=2
+        elif [ "$_b" -eq 240 ]; then _need=3; _lo=144
+        elif [ "$_b" -eq 244 ]; then _need=3; _hi=143
+        elif [ "$_b" -ge 241 ] && [ "$_b" -le 243 ]; then _need=3
+        else exit 1; fi
+      done
+      [ "$_need" -eq 0 ]
+    )
+
     jesc() (
       LC_ALL=C
       _s=$1
@@ -157,7 +185,7 @@ case "$cmd" in
       _hi=raw
       case "$_s" in
         *[!\ -~$'\001'-$'\037'$'\177']*)
-          printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || _hi=esc ;;
+          utf8_ok "$_s" || _hi=esc ;;
       esac
       _o=; _i=0
       while [ "$_i" -lt "${#_s}" ]; do

@@ -264,6 +264,18 @@ CASES = [
     ("installer-instance-rerun-drops-settings", "scripts/install-devbox", '  unset password_line\n  if [[ -n $INSTANCE ]]; then printf \'%s\\n\' "$instance_settings" >>"$tmp_env"; fi\n', '  unset password_line\n', ["python3", "tests/test-install-devbox-instance.py"], "instance_env_settings:rerun"),
     ("installer-instance-browser-port-not-owned", "scripts/install-devbox", 'DEVBOX_WEB_PORT=*|DEVBOX_SSH_PORT=*|DEVBOX_BROWSER_PORT=*)', 'DEVBOX_WEB_PORT=*|DEVBOX_SSH_PORT=*)', ["python3", "tests/test-install-devbox-instance.py"], "instance_browser_rerun_owned_ports"),
     ("harness-instance-browser-port-ignored", "scripts/devbox-anywhere", 'allowed |= INSTANCE_SETTINGS | {"DEVBOX_BROWSER_PORT"}', 'allowed |= INSTANCE_SETTINGS', ["python3", "tests/test-agent-harness-operations.py"], "harness_instance_state:browser"),
+    # Re-review round: each fail-closed branch or escape below survived its revert before.
+    ("status-json-utf8-check-iconv", "scripts/devbox-session", '          utf8_ok "$_s" || _hi=esc ;;', """          printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || _hi=esc ;;""", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-json-utf8-above-max", "scripts/devbox-session", 'elif [ "$_b" -eq 244 ]; then _need=3; _hi=143\n', 'elif [ "$_b" -eq 244 ]; then _need=3\n', ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-json-quote-raw", "scripts/devbox-session", """          '"') _o="$_o\\\\\\"" ;;\n""", "", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-json-backslash-raw", "scripts/devbox-session", """          '\\') _o="$_o\\\\\\\\" ;;\n""", "", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-turn-free-any-worktree", "scripts/devbox-session", """"free: $1") printf 'free'; return ;;""", """free*) printf 'free'; return ;;""", ["python3", "tests/test-session-status.py"], "turn_free_other_worktree_reads_unknown"),
+    ("status-turn-age-suffix-optional", "scripts/devbox-session", """case "$_h" in *", age="*) _h=${_h%", age="*} ;; *) printf 'unknown'; return ;; esac""", """case "$_h" in *", age="*) _h=${_h%", age="*} ;; *) : ;; esac""", ["python3", "tests/test-session-status.py"], "turn_held_no_age_reads_unknown"),
+    ("status-broken-worktree-turn-free", "scripts/devbox-session", "        broken=true; turn=unknown\n", "        broken=true\n", ["python3", "tests/test-session-status.py"], "status_broken_worktree_error:turn"),
+    ("status-activity-pane-row-unchecked", "scripts/devbox-session", """          case "$pl" in *"$tab"?*) : ;; *) printf 'unknown held'; return ;; esac\n""", "", ["python3", "tests/test-session-activity-faketmux.py"], "a pane row with no command"),
+    ("status-activity-panes-fail-idle", "scripts/devbox-session", """2>/dev/null && printf '.') || { printf 'unknown held'; return; }\n        panes=${panes%.}""", """2>/dev/null && printf '.') || { printf 'idle'; return; }\n        panes=${panes%.}""", ["python3", "tests/test-session-activity-faketmux.py"], "a failing pane listing"),
+    ("turn-ts-length-uncapped", "scripts/devbox-turn", '  [ "${#ts}" -le 18 ] || return 0\n', '', ["python3", "tests/test-turn-lock.py"], "turn_ts_not_evaluated"),
+    ("gate-append-stderr-leak", "scripts/devbox-status-gate", """  { printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log"; } 2>/dev/null || exit 1""", """  printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log" 2>/dev/null || exit 1""", ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed:read-only-log-dir"),
 ]
 
 for case in CASES:
