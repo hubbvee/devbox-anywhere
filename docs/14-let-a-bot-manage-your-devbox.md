@@ -289,7 +289,7 @@ substitute for yours.
 | The bot account or its machine is compromised | It holds only a status-gate key (read-only) and a bridge credential (allow-listed, rate-limited, audited). Revoke = remove the key line, the tunnel key and any exposure, and rotate the bridge secret ([step 5](#5-revoke-and-the-kill-switch)). Kill switch stops the instance |
 | Prompt injection through repository content, issues, or comments | Agents hold only dev-only, read-only credentials; pushes happen only through your push step, only to `agent/*`; you merge; you verify independently |
 | The bot tries to get a shell through its key | The forced command plus `restrict` (no terminal, no port/agent/X11 forwarding); the gate's four-request allow-list; denials are logged. This holds **only while nothing inside the instance is compromised**: the gate, the key line, and the log are files the instance's agents can change |
-| A compromised agent rewrites the gate, the key line, or the log | Nothing inside the instance can prevent it (agents can become root there). The authoritative audit log is the bridge's, outside the instance; on suspicion, stop the instance and rebuild its `~/.ssh`, do not just edit a line |
+| A compromised agent rewrites the gate, the key line, or the log | Nothing inside the instance can prevent it (agents can become root there). The authoritative audit log is the bridge's, outside the instance; on suspicion, discard the container and set the data root aside, then rebuild ([step 5](#5-revoke-and-the-kill-switch)) — do not just edit a line or restart it |
 | An agent reaches for your own credentials or code | Separate instance, separate data root and logins; the bot has no key to your devbox |
 | An agent sends off the source, secrets, or login it does have | Not preventable once it can read them. Limit what it can read: only the repositories in scope, a dev vault with only rotatable dev secrets, a separate capped model account. Rotate them all after a suspected compromise |
 | Malicious code in an agent branch runs in your tooling | Push step is unprivileged, hooks disabled, clean clone; tests run in a clean checkout or CI configuration you trust; you review before merge |
@@ -298,7 +298,7 @@ substitute for yours.
 | A hijacked bot approves its own request | Approvals travel on a channel the bot cannot read or answer, bound to one request id; answers carrying the bot's credential are rejected |
 | Host root follows a link planted in the instance's data root | Edit the instance's files from inside the instance as `coder` ([step 3](#3-add-the-gate-line)), never as host root through `/data/devbox-NAME/...` |
 | A runaway loop burns your quota | Rate limits, one agent at a time, work windows, backoff; a separate, capped model account |
-| Status output carries injected text | Agent ids, branch names, worktree paths, and turn holders are written inside the bot's instance (by agents and helpers) and are only JSON-escaped, not sanitized. The bot and your bridge must treat every status field as untrusted data, never as instructions |
+| Status output carries injected text | Agent ids, branch names, worktree paths, and turn holders are written inside the bot's instance (by agents and helpers). Status prints them only in safe forms — `--json` escapes every control byte, the table and `list` show printable ASCII only — but what they *say* is still whatever an agent wrote. The bot and your bridge must treat every status field as untrusted data, never as instructions |
 | The instance's ports are exposed | Loopback-only by default; ports are validated and refused if already in use |
 | Escape from the container to the host | **Not** solved by a second instance: same kernel and Docker daemon. Agents can become root inside the container (`coder` has passwordless `sudo`); what holds is the default container confinement — no Docker socket, no privileged mode, no host mounts beyond the instance's data root. Leave `--with-browser` off for the bot's instance (the opt-in browser container runs with a relaxed seccomp profile). For stronger isolation, use a separate server |
 
@@ -309,8 +309,14 @@ called `myproject`. Substitute your own; keep everything else exactly as written
 
 ### 1. Create the bot's instance
 
-From the same root-owned, approved checkout you installed from
-([docs/00](00-agent-guided-install.md)), plan, dry-run, install, and verify:
+If this server already runs a devbox installed from a release older than v1.8.0, upgrade
+first: approve the v1.8.0 release and re-create `/opt/devbox-anywhere` at its exact commit
+([docs/00](00-agent-guided-install.md) step 1, so `$APPROVED_COMMIT` is that commit), then
+re-run the default installer from it ([docs/00](00-agent-guided-install.md) step 3). An older
+checkout refuses `--instance` (`unknown option`), and your default devbox only gets
+`devbox-status-gate`, which `verify` checks for, from that re-run.
+
+From that root-owned, approved checkout, plan, dry-run, install, and verify:
 
 ```bash
 cd /opt/devbox-anywhere
@@ -386,9 +392,12 @@ EOF
   asks to run.
 - `restrict` turns off terminal allocation and port, agent, and X11 forwarding for this
   key.
-- Optionally add `from="ADDRESS"` to accept the key only from your caller's address.
-  Check the source address the instance's sshd actually logs for a test connection first:
-  Docker's port publishing can change what the container sees.
+- Optionally add `from="ADDRESS"` to accept the key only from your caller's address. The
+  container's sshd keeps no log of its own, so find the address the instance actually sees
+  in the gate's log: the client column (the fourth tab-separated field) of a test request
+  ([step 4](#4-test-allowed-and-denied-requests)). Docker's port publishing can rewrite the
+  source: callers on the server itself often all show up as the Docker network's gateway
+  address, and then `from=` cannot tell them apart.
 
 ### 4. Test allowed and denied requests
 
@@ -473,10 +482,35 @@ path to it by default. In order of preference:
 1. **Let your bridge relay status.** The bridge runs on the server, calls the gate on
    `127.0.0.1`, and returns the result to the bot. The bot never gets a network path to
    sshd at all.
-2. **A forwarding-only host account.** A dedicated unprivileged host account whose
-   `authorized_keys` line allows nothing but a tunnel to that one port, for example
-   `restrict,port-forwarding,permitopen="127.0.0.1:2322",command="/usr/sbin/nologin" ssh-ed25519 AAAA... my-bot-tunnel`,
-   used with `ssh -N -L 2322:127.0.0.1:2322 BOT_TUNNEL_USER@SERVER_ADDRESS`.
+2. **A forwarding-only host account.** A dedicated unprivileged host account that can do
+   nothing but open a local tunnel to that one port. Its `authorized_keys` line alone is
+   **not** enough: `port-forwarding` turns forwarding back on in both directions, and
+   `permitopen` limits only local (`-L`) forwards, so the key could still open listeners on
+   the server's loopback with `-R` — for example on the instance's own port while the
+   instance is stopped. Restrict the account in the server's sshd configuration as well,
+   with a block at the **end** of `/etc/ssh/sshd_config`:
+
+   ```text
+   Match User BOT_TUNNEL_USER
+       AllowTcpForwarding local
+       PermitOpen 127.0.0.1:2322
+       PermitListen none
+       AllowAgentForwarding no
+       AllowStreamLocalForwarding no
+       X11Forwarding no
+       PermitTTY no
+       ForceCommand /usr/sbin/nologin
+   ```
+
+   Run `sudo sshd -t`, then check what that account really gets —
+   `sudo sshd -T -C user=BOT_TUNNEL_USER,host=localhost,addr=127.0.0.1 | grep -Ei '^(allowtcpforwarding|permitopen|permitlisten) '`
+   must print `local`, `127.0.0.1:2322`, and `none` — and reload sshd. Keep the key line
+   restricted too:
+   `restrict,port-forwarding,permitopen="127.0.0.1:2322",command="/usr/sbin/nologin" ssh-ed25519 AAAA... my-bot-tunnel`.
+   Use it with `ssh -N -L 2322:127.0.0.1:2322 BOT_TUNNEL_USER@SERVER_ADDRESS`, and confirm
+   that a remote forward with the same key,
+   `ssh -N -o ExitOnForwardFailure=yes -R 127.0.0.1:42999:127.0.0.1:22 BOT_TUNNEL_USER@SERVER_ADDRESS`,
+   fails.
 3. **Deliberate exposure.** Re-run the installer with the instance's same flags plus
    `--expose-ssh`, which publishes that instance's `--ssh-port` on every interface
    (`0.0.0.0`; its web port stays on loopback), and allow only the bot's source address
@@ -504,16 +538,42 @@ path to it by default. In order of preference:
   ```
 
   Bring it back later with the same command and `start`, or re-run the installer with
-  the same flags.
+  the same flags — but only when you have no reason to suspect the instance itself.
 
-**If you suspect the instance itself is compromised,** deleting one line is not enough:
-an agent could have edited the gate, added the key elsewhere (OpenSSH also reads
-`~/.ssh/authorized_keys2` by default), or rewritten the log. Stop the instance first.
-Then audit or recreate all of its `~/.ssh` (including `authorized_keys2` and the host
-keys) and its `~/.local/bin` helpers from a known-good source — or remove the instance
-and create a fresh one ([docs/03](03-deploy-the-devbox.md#running-a-second-instance)) —
-and rotate every credential it held: the Git token, the dev vault, and the model login.
-Investigate with the bridge's audit log, not the instance's.
+**If you suspect the instance itself is compromised,** deleting one line is not enough,
+and neither is a restart. Agents can become root inside the container, so treat
+everything the instance could write as hostile: the gate and every key file (OpenSSH also
+reads `~/.ssh/authorized_keys2`, and a root agent can add an sshd drop-in that names yet
+another key file), the helpers and anything else under `~/.local` (its `bin` comes first on
+`PATH`, so an extra file there shadows system tools), the settings and hooks under
+`~/.claude` and `~/.codex`, the repositories' `.git/hooks`, and the container's own system
+files. `start` keeps all of that, and so does re-running the installer: its `up -d` leaves
+an unchanged container as it is. Instead:
+
+1. Stop the instance and discard its container (this removes the container's own files,
+   not the data root):
+
+   ```bash
+   cd / && sudo docker --context default compose -p devbox-bot down
+   ```
+
+2. Set the whole data root aside, untouched, for investigation. Do not browse or copy
+   from it as host root; it can hold planted symlinks:
+
+   ```bash
+   sudo mv /data/devbox-bot /data/devbox-bot.suspect
+   ```
+
+3. Create the instance again with the same flags ([step 1](#1-create-the-bots-instance)).
+   It starts from an empty data root: clone the repositories afresh, log in again, and
+   make a new bot key ([step 2](#2-create-a-dedicated-key-for-the-bot)). Bring nothing
+   across from the old data root that you have not reviewed, and never its `~/.ssh`,
+   `~/.local`, `~/.claude`, `~/.codex`, or repository hooks.
+4. Rotate every credential it held: the Git token, the dev vault, and the model login.
+
+Investigate with the bridge's audit log, not the instance's. Delete
+`/data/devbox-bot.suspect` only when you are done with it, as in
+[docs/03](03-deploy-the-devbox.md#running-a-second-instance).
 
 Practice the routine steps and the kill switch once before you need them.
 

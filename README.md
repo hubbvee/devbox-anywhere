@@ -75,11 +75,19 @@ use a blind `curl | sudo bash` path or print generated credentials.
   [docs/14](docs/14-let-a-bot-manage-your-devbox.md): a separate instance with dev-only
   credentials, your own bridge for writes, human gates, independent verification, a
   staged autonomy ladder, and a threat model.
+- **Upgrading:** to add an instance to an existing box, first move `/opt/devbox-anywhere`
+  to the approved v1.8.0 commit and re-run the default installer
+  ([docs/14 step 1](docs/14-let-a-bot-manage-your-devbox.md#1-create-the-bots-instance)).
 - **Fixed:** the status board now proves an agent's tmux window exists before reading it.
   An agent with no window reads `unknown` instead of borrowing the session's main shell
   state; a window it cannot prove (a duplicated window name, or tmux output it cannot
   parse, such as a newline inside a window name) also reads `unknown` and is never
   `(reapable)`.
+- **Fixed:** a split window reads `working` when any of its panes runs the agent, not only
+  the selected one. A turn the board cannot read exactly reads `unknown`, never `free`.
+  `status` no longer takes git's index lock (polling could make an agent's `git add` fail),
+  a worktree git cannot read shows `ERROR` instead of hiding the whole board, `--json`
+  escapes every control byte, and the table and `list` print printable ASCII only.
 
 ## New in v1.7.0: agent status board
 

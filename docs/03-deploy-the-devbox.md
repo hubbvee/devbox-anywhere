@@ -83,8 +83,11 @@ before code-server even sees the request.
 
 The plain-Docker installer ([docs/00](00-agent-guided-install.md)) can run a second,
 fully separate devbox next to your first — for example, one for a bot's agents with
-dev-only credentials ([docs/14](14-let-a-bot-manage-your-devbox.md)). From the same
-approved checkout:
+dev-only credentials ([docs/14](14-let-a-bot-manage-your-devbox.md)). If your devbox was
+installed from a release older than v1.8.0, first move `/opt/devbox-anywhere` to the
+approved v1.8.0 commit and re-run the default installer from it
+([docs/00](00-agent-guided-install.md) steps 1 and 3): an older checkout refuses
+`--instance`. Then, from that approved checkout:
 
 ```bash
 cd /opt/devbox-anywhere
@@ -143,8 +146,11 @@ from a directory without a compose file, so only the project name is used):
 cd / && sudo docker --context default compose -p devbox-NAME down
 ```
 
-This leaves `/data/devbox-NAME` on disk. Delete it only **after** you have backed it up
-and checked the backup, because it holds that instance's code, logins, and keys:
+This leaves `/data/devbox-NAME` on disk, and a new instance with the same name reuses it.
+If you suspect the instance was compromised, set the data root aside instead of reusing it
+([docs/14 step 5](14-let-a-bot-manage-your-devbox.md#5-revoke-and-the-kill-switch)). Delete
+it only **after** you have backed it up and checked the backup, because it holds that
+instance's code, logins, and keys:
 
 ```bash
 sudo sh -c 'umask 077; tar -C /data -czf /root/devbox-NAME-final.tar.gz devbox-NAME'
