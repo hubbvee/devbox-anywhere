@@ -53,6 +53,37 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.7.0: agent status board
+
+- **Every agent on a project, at a glance** — `devbox-session status <project>` shows each
+  agent's git state (`new | new+dirty | clean | dirty | merged | merged+dirty`),
+  `+ahead/-behind` against the base branch, who holds the `devbox-turn`, and a labeled
+  activity **heuristic** (`working | idle | blocked | unknown`). Add `--json` for a
+  schema-versioned document that scripts and agents can read.
+- **Safe cleanup** — an agent is marked `(reapable)` only when it is merged, clean, the turn
+  is free, and nothing is running in its window. A just-created agent reads `new`, never
+  `merged`. Unknown or missing state fails closed: no guessing, never reapable.
+- **No migration** — existing registries keep working. See
+  [docs/13](docs/13-multi-channel-multi-agent.md).
+
+## New in v1.6: rebuild safety
+
+*v1.6.0 shipped the features below; v1.6.1 fixed a `verify` false alarm under repeated runs.*
+
+- **Your customizations survive upgrades** — add your own persistent links as
+  `~/.local/share/devbox-relink.d/*.conf` drop-ins instead of editing the shipped helper.
+  If an upgrade would overwrite a helper you changed, the installer backs it up first and
+  prints a `PRESERVED` notice listing what to move into a drop-in.
+- **Long-running processes come back on their own** — declare them in
+  `~/.local/share/devbox-daemons.d/<name>.conf` and `devbox-daemon` restarts them at every
+  boot, with no human action after a rebuild. See
+  [docs/10](docs/10-telegram-project-topics.md).
+- **`verify` checks what actually breaks after a rebuild** — broken managed links and
+  declared daemons that aren't running are reported as warnings (they never block an install
+  that was fine before).
+- **Fixed:** `gh auth login` can now persist its login on a fresh install, and repeated
+  `verify` runs no longer trip OpenSSH's connection penalties.
+
 ## New in v1.5.0: worktree post-add hook
 
 - **Dependencies on new worktrees, handled** — a freshly created agent worktree has no
