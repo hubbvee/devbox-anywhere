@@ -40,6 +40,8 @@ assert plan_report["network"] == {"web_bind": "127.0.0.1", "ssh_bind": "127.0.0.
 assert plan_report["approval_required"] == ["sudo", "container build/start"]
 assert plan_report["install_command"].startswith("sudo /opt/devbox-anywhere/scripts/install-devbox ")
 assert "--expose-ssh" not in plan_report["install_command"]
+assert "instance" not in plan_report and plan_report["data_root"] == "/data/devbox", "default_report_unchanged"
+assert "--instance" not in plan_report["install_command"], "default_report_unchanged"
 
 public_plan = run("plan", "--json", "--approved-commit", SHA, "--expose-ssh")
 assert public_plan.returncode == 0, public_plan.stderr
@@ -134,6 +136,7 @@ else:
         "service.http", "service.ssh", "network.bindings", "storage.mounts",
     }, "verify_check_ids"
     assert "TEST_SECRET_MUST_NOT_APPEAR" not in verified.stdout + verified.stderr
+    assert "instance" not in verify_report, "default_report_unchanged"
     calls = [json.loads(line) for line in docker_log.read_text().splitlines()]
     assert all(call["args"][:2] == ["--context", "default"] for call in calls)
     assert all(call["docker_config"] == "/nonexistent/devbox-anywhere-docker-config" for call in calls), "runtime_docker_config"
@@ -220,6 +223,245 @@ esac
     assert "docker --context default logs devbox" in serialized
     assert "DOCKER_CONFIG=/nonexistent/devbox-anywhere-docker-config" in serialized
     assert "DEVBOX_PASSWORD=" not in serialized
+    assert "instance" not in diagnosis, "default_report_unchanged"
+    assert f"compose --env-file {root / 'install' / 'compose.env'} -f" in serialized, "default_report_unchanged"
+    HARNESS = SOURCE_HARNESS
+
+# --- Named instances (--instance NAME) ------------------------------------------------------------
+# Invalid names are refused with exit 2 on every command, and never echoed back.
+for command_args in (["preflight"], ["verify"], ["diagnose"], ["plan", "--approved-commit", SHA, "--web-port", "9080", "--ssh-port", "9022"]):
+    for bad_name in ("MyApp", "my-app", "../etc", "my/app", "my.app", "a" * 16, "", "browser", "default", "devbox", "1app", "app\n"):
+        rejected_name = run(*command_args, "--json", "--instance", bad_name)
+        assert rejected_name.returncode == 2, f"harness_instance_validation:{command_args[0]}:{bad_name!r}"
+        rejected_report = json.loads(rejected_name.stdout)
+        assert rejected_report["ok"] is False and rejected_report["command"] == command_args[0], "harness_instance_validation"
+        if bad_name:
+            assert bad_name not in rejected_report["error"]["message"], "harness_instance_redaction"
+
+# A repeated --instance or port option is refused like the installer's once(), never last-wins,
+# and the rejected value is never echoed.
+for repeated in (
+    ["verify", "--json", "--instance", "myapp", "--instance", "other"],
+    ["diagnose", "--json", "--instance", "myapp", "--instance", "other"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--instance", "other"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--web-port", "9090"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--ssh-port", "9023"],
+    ["plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022",
+     "--with-browser", "--browser-port", "9081", "--browser-port", "9082"],
+):
+    repeated_result = run(*repeated)
+    assert repeated_result.returncode == 2, f"harness_option_repeated:{repeated!r}"
+    repeated_report = json.loads(repeated_result.stdout)
+    assert repeated_report["ok"] is False and repeated_report["command"] == repeated[0], f"harness_option_repeated:{repeated!r}"
+    assert repeated[-1] not in repeated_result.stdout + repeated_result.stderr, f"harness_option_repeated_redaction:{repeated!r}"
+text_repeated = run("plan", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--instance", "other")
+assert text_repeated.returncode == 2 and "--instance may be given only once" in text_repeated.stderr, "harness_option_repeated:text"
+assert "other" not in text_repeated.stdout + text_repeated.stderr, "harness_option_repeated_redaction:text"
+
+# plan --instance: the install command carries the instance and its ports; nothing else changes.
+instance_plan = run("plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022")
+assert instance_plan.returncode == 0, "harness_instance_plan: " + instance_plan.stdout + instance_plan.stderr
+instance_plan_report = json.loads(instance_plan.stdout)
+assert instance_plan_report["data_root"] == "/data/devbox-myapp", "harness_instance_plan"
+assert instance_plan_report["network"] == {"web_bind": "127.0.0.1", "ssh_bind": "127.0.0.1"}, "harness_instance_plan"
+assert instance_plan_report["approval_required"] == ["sudo", "container build/start"], "harness_instance_plan"
+assert instance_plan_report["install_command"] == (
+    f"sudo /opt/devbox-anywhere/scripts/install-devbox --yes --approved-commit {SHA}"
+    " --instance myapp --web-port 9080 --ssh-port 9022"
+), "harness_instance_plan"
+assert instance_plan_report["instance"] == {
+    "name": "myapp", "project": "devbox-myapp", "container": "devbox-myapp",
+    "data_root": "/data/devbox-myapp", "web_port": "9080", "ssh_port": "9022",
+}, "harness_instance_plan"
+assert instance_plan_report["schema_version"] == 2, "harness_instance_schema"
+browser_instance_plan = run(
+    "plan", "--json", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022",
+    "--with-browser", "--browser-port", "9081", "--expose-ssh",
+)
+assert browser_instance_plan.returncode == 0, browser_instance_plan.stdout + browser_instance_plan.stderr
+browser_instance_report = json.loads(browser_instance_plan.stdout)
+assert browser_instance_report["network"] == {"web_bind": "127.0.0.1", "ssh_bind": "0.0.0.0", "browser_bind": "127.0.0.1:9081"}, "harness_instance_plan_browser"
+assert browser_instance_report["install_command"].endswith(
+    " --expose-ssh --with-browser --instance myapp --web-port 9080 --ssh-port 9022 --browser-port 9081"
+), "harness_instance_plan_browser"
+assert browser_instance_report["instance"]["browser_port"] == "9081", "harness_instance_plan_browser"
+text_plan = run("plan", "--approved-commit", SHA, "--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022")
+assert "Web: 127.0.0.1:9080; SSH: 127.0.0.1:9022" in text_plan.stdout, "harness_instance_plan_text"
+for bad_ports in (
+    ["--web-port", "9080", "--ssh-port", "9022"],
+    ["--instance", "myapp"],
+    ["--instance", "myapp", "--web-port", "9080"],
+    ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "9080"],
+    ["--instance", "myapp", "--web-port", "8080", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "2222"],
+    ["--instance", "myapp", "--web-port", "8081", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", "1023", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", "65536", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", "09080", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", " 9080", "--ssh-port", "9022"],
+    ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--with-browser"],
+    ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--browser-port", "9081"],
+    ["--instance", "myapp", "--web-port", "9080", "--ssh-port", "9022", "--with-browser", "--browser-port", "9022"],
+):
+    refused = run("plan", "--json", "--approved-commit", SHA, *bad_ports)
+    assert refused.returncode == 2, f"harness_plan_port_validation:{bad_ports!r}"
+    assert json.loads(refused.stdout)["ok"] is False, "harness_plan_port_validation"
+
+INSTANCE_MOUNTS = [
+    {"Type": "bind", "Source": f"/data/devbox-myapp/{leaf}", "Destination": destination, "RW": True}
+    for leaf, destination in (
+        ("project", "/home/coder/project"), ("dot-local", "/home/coder/.local"), ("claude", "/home/coder/.claude"),
+        ("codex", "/home/coder/.codex"), ("ssh", "/home/coder/.ssh"),
+    )
+]
+INSTANCE_ENV = (
+    "DEVBOX_PASSWORD=TEST_SECRET_MUST_NOT_APPEAR\n"
+    "DEVBOX_DATA_ROOT=/data/devbox-myapp\n"
+    "DEVBOX_WEB_BIND=127.0.0.1\n"
+    "DEVBOX_SSH_BIND=127.0.0.1\n"
+    "DEVBOX_BROWSER_BIND=127.0.0.1\n"
+    "DEVBOX_BROWSER_PASSWORD=TEST_SECRET_MUST_NOT_APPEAR\n"
+    "DEVBOX_INSTANCE=myapp\n"
+    "DEVBOX_PROJECT=devbox-myapp\n"
+    "COMPOSE_PROJECT_NAME=devbox-myapp\n"
+    "DEVBOX_CONTAINER=devbox-myapp\n"
+    "DEVBOX_WEB_PORT=9080\n"
+    "DEVBOX_SSH_PORT=9022\n"
+)
+
+
+def instance_docker(path: pathlib.Path, log: pathlib.Path, project: str = "devbox-myapp", web_port: str = "9080") -> None:
+    """Fake docker that answers ONLY the exact instance argv; anything else (e.g. the default
+    container name) exits 64 and turns the corresponding check red."""
+    exec_prefix = ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox-myapp"]
+    passing = [exec_prefix + ["/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"] for helper in (
+        "devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree")]
+    passing += [
+        exec_prefix + ["/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"],
+        exec_prefix + ["/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"],
+    ]
+    path.write_text(f'''#!/usr/bin/python3
+import json, pathlib, sys
+args = sys.argv[1:]
+with pathlib.Path({str(log)!r}).open("a") as stream:
+    stream.write(json.dumps(args) + "\\n")
+outputs = {{
+    ("--context", "default", "inspect", "--format", '{{{{index .Config.Labels "com.docker.compose.project"}}}}', "devbox-myapp"): {project!r},
+    ("--context", "default", "inspect", "-f", "{{{{.State.Running}}}}", "devbox-myapp"): "true",
+    ("--context", "default", "inspect", "--format", "{{{{json .NetworkSettings.Ports}}}}", "devbox-myapp"): json.dumps(
+        {{"8080/tcp": [{{"HostIp": "127.0.0.1", "HostPort": {web_port!r}}}], "22/tcp": [{{"HostIp": "127.0.0.1", "HostPort": "9022"}}]}}),
+    ("--context", "default", "inspect", "--format", "{{{{json .Mounts}}}}", "devbox-myapp"): json.dumps({INSTANCE_MOUNTS!r}),
+}}
+if tuple(args) in outputs:
+    print(outputs[tuple(args)])
+elif args in {passing!r}:
+    pass
+elif len(args) > 9 and args[:8] == {exec_prefix!r} and args[8:10] == ["/bin/sh", "-c"]:
+    pass
+else:
+    raise SystemExit(64)
+''')
+    path.chmod(0o755)
+
+
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    # Process umask was pinned to 0o022 by the default block above.
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    docker_log = root / "docker-calls.jsonl"
+    docker = fake_bin / "docker"
+    instance_docker(docker, docker_log)
+    harness_text = SOURCE_HARNESS.read_text()
+    for old, new in (
+        ('SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"', f'SAFE_PATH = "{fake_bin}:/usr/bin:/bin"'),
+        ('SOURCE_ROOT = pathlib.Path("/opt/devbox-anywhere")', f'SOURCE_ROOT = pathlib.Path("{ROOT}")'),
+        ('STATE_DIR = pathlib.Path("/data/devbox/install")', f'STATE_DIR = pathlib.Path("{root / "devbox" / "install"}")'),
+        ('STATE_ANCESTRY = (pathlib.Path("/data"), pathlib.Path("/data/devbox"), STATE_DIR)', 'STATE_ANCESTRY = (STATE_DIR,)'),
+        ('INSTANCE_PARENT = pathlib.Path("/data")', f'INSTANCE_PARENT = pathlib.Path("{root}")'),
+        ("EXPECTED_STATE_OWNER = 0", f"EXPECTED_STATE_OWNER = {os.getuid()}"),
+    ):
+        assert harness_text.count(old) == 1, f"fixture_patch:{old}"
+        harness_text = harness_text.replace(old, new)
+    harness_copy = root / "devbox-anywhere"
+    harness_copy.write_text(harness_text)
+    harness_copy.chmod(0o755)
+    HARNESS = harness_copy
+    state = root / "devbox-myapp" / "install"
+    state.mkdir(parents=True)
+    env_file = state / "compose.env"
+    env_file.write_text(INSTANCE_ENV)
+    env_file.chmod(0o600)
+
+    def checks_of(result: subprocess.CompletedProcess[str]) -> dict[str, str]:
+        return {item["id"]: item["status"] for item in json.loads(result.stdout)["checks"]}
+
+    instance_verified = run("verify", "--json", "--instance", "myapp")
+    assert instance_verified.returncode == 0, "harness_instance_runtime_argv: " + instance_verified.stdout + instance_verified.stderr
+    instance_report = json.loads(instance_verified.stdout)
+    assert {item["id"] for item in instance_report["checks"] if item["status"] == "pass"} == {
+        "state.file", "container.project", "container.running", "helper.devbox", "helper.devbox-daemon",
+        "helper.devbox-relink", "helper.devbox-session", "helper.devbox-turn", "helper.devbox-worktree",
+        "service.http", "service.ssh", "network.bindings", "storage.mounts", "relink.targets",
+    }, "harness_instance_check_ids"
+    assert instance_report["instance"] == {
+        "name": "myapp", "project": "devbox-myapp", "container": "devbox-myapp",
+        "data_root": "/data/devbox-myapp", "web_port": "9080", "ssh_port": "9022",
+    }, "harness_instance_report"
+    assert "TEST_SECRET_MUST_NOT_APPEAR" not in instance_verified.stdout + instance_verified.stderr
+    instance_calls = [json.loads(line) for line in docker_log.read_text().splitlines()]
+    assert instance_calls and all("devbox" not in call for call in instance_calls), "harness_instance_default_container"
+    assert ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox-myapp", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"] in instance_calls, "harness_instance_runtime_argv"
+
+    # Default verify in the same harness never reads the instance's state or container.
+    default_from_instance_box = run("verify", "--json")
+    assert default_from_instance_box.returncode == 1, "harness_instance_isolation"
+    default_checks = checks_of(default_from_instance_box)
+    assert default_checks["state.file"] == "fail" and default_checks["container.running"] == "fail", "harness_instance_isolation"
+
+    # A container that reuses the name but belongs to another project is reported, never trusted.
+    instance_docker(docker, docker_log, project="stack")
+    hijacked = run("verify", "--json", "--instance", "myapp")
+    assert hijacked.returncode == 1 and checks_of(hijacked)["container.project"] == "fail", "harness_instance_project_label"
+    instance_docker(docker, docker_log, web_port="8080")
+    wrong_port = run("verify", "--json", "--instance", "myapp")
+    assert wrong_port.returncode == 1 and checks_of(wrong_port)["network.bindings"] == "fail", "harness_instance_port_binding"
+    instance_docker(docker, docker_log)
+
+    # The instance state file is validated against the name it was derived from.
+    for old, new in (
+        ("DEVBOX_INSTANCE=myapp", "DEVBOX_INSTANCE=other"),
+        ("DEVBOX_PROJECT=devbox-myapp", "DEVBOX_PROJECT=stack"),
+        ("COMPOSE_PROJECT_NAME=devbox-myapp", "COMPOSE_PROJECT_NAME=stack"),
+        ("COMPOSE_PROJECT_NAME=devbox-myapp\n", ""),
+        ("DEVBOX_CONTAINER=devbox-myapp", "DEVBOX_CONTAINER=devbox"),
+        ("DEVBOX_DATA_ROOT=/data/devbox-myapp", "DEVBOX_DATA_ROOT=/data/devbox"),
+        ("DEVBOX_WEB_PORT=9080", "DEVBOX_WEB_PORT=8080"),
+        ("DEVBOX_SSH_PORT=9022", "DEVBOX_SSH_PORT=9080"),
+        ("DEVBOX_SSH_PORT=9022", "DEVBOX_SSH_PORT=022"),
+        ("DEVBOX_WEB_PORT=9080\n", ""),
+        ("DEVBOX_SSH_PORT=9022\n", "DEVBOX_SSH_PORT=9022\nDEVBOX_SSH_PORT=9023\n"),
+    ):
+        env_file.write_text(INSTANCE_ENV.replace(old, new, 1))
+        bad_state = run("verify", "--json", "--instance", "myapp")
+        assert bad_state.returncode == 1 and checks_of(bad_state)["state.file"] == "fail", f"harness_instance_state:{new!r}"
+    env_file.write_text(INSTANCE_ENV)
+
+    preflight_report = json.loads(run("preflight", "--json", "--instance", "myapp").stdout)
+    assert preflight_report["instance"] == {
+        "name": "myapp", "project": "devbox-myapp", "container": "devbox-myapp", "data_root": "/data/devbox-myapp",
+    }, "harness_instance_preflight"
+
+    docker.write_text("#!/bin/sh\nexit 1\n")
+    instance_diagnosis = run("diagnose", "--json", "--instance", "myapp")
+    assert instance_diagnosis.returncode == 1
+    instance_diagnosis_report = json.loads(instance_diagnosis.stdout)
+    recovery = instance_diagnosis_report["recovery_commands"]
+    assert recovery[0].endswith("docker --context default logs devbox-myapp"), "harness_instance_recovery"
+    assert f"docker --context default compose -p devbox-myapp --env-file {env_file} -f " in recovery[1], "harness_instance_recovery"
+    assert recovery[2] == "./scripts/devbox-anywhere verify --json --instance myapp", "harness_instance_recovery"
+    assert instance_diagnosis_report["instance"]["name"] == "myapp", "harness_instance_recovery"
+    assert "TEST_SECRET_MUST_NOT_APPEAR" not in instance_diagnosis.stdout, "harness_instance_recovery"
     HARNESS = SOURCE_HARNESS
 
 print("agent_harness_operations=PASS")
