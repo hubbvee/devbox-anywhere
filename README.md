@@ -100,6 +100,29 @@ Each release below lists what changed; full notes, including upgrade steps, are 
 
 ## New in v1.8.0: a separate devbox for your bot, with a read-only door
 
+**Why.** Hosted AI bots (a chat bot, a scheduled automation, an agent running somewhere
+else) can now plan and supervise coding work: check on your agents, hand out the next
+task, report when a branch is ready. That keeps projects moving while you're away. But
+giving a bot a shell on your everyday devbox gives it everything that devbox can reach:
+your logins, your secrets, and anything you can deploy from there. And a bot can be
+steered by text it reads (prompt injection) or taken over through its vendor account.
+v1.8.0 gives you the pieces to delegate while keeping the damage small if something goes
+wrong. (Writes, such as handing out tasks, go through a small bridge you build; see
+[docs/14](docs/14-let-a-bot-manage-your-devbox.md).)
+
+- **A separate instance** so the bot's agents work in their own box with dev-only
+  credentials. A mistake or a takeover then reaches that box's repositories, dev secrets,
+  and model login, not your everyday logins and secrets. It is a container on the same
+  server, not a separate machine; docs/14 lists the limits.
+- **A read-only door** so the bot can watch progress without a shell. A stolen bot key can
+  only read status, as long as nothing inside the instance has been compromised.
+- **A more accurate status board**, because a bot (or you) uses it to decide what to clean
+  up. In v1.7.0, an agent whose tmux window was missing could show the main shell's state
+  (for example `idle`) instead of `unknown`; it now reads `unknown`. Still, treat status as
+  a report, not proof.
+
+What's in it:
+
 - **Run a second, isolated devbox** — `install-devbox --instance NAME --web-port N
   --ssh-port N` (plus `--browser-port N` with `--with-browser`) creates container
   `devbox-NAME` in Compose project `devbox-NAME`, with its own data root
