@@ -11,7 +11,7 @@ import subprocess
 import sys
 import re
 import stat
-from typing import Any
+from typing import Any, NamedTuple
 
 SCHEMA_VERSION = 2
 REAL_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,8 +22,69 @@ SOURCE_ROOT = pathlib.Path("/opt/devbox-anywhere")
 STATE_DIR = pathlib.Path("/data/devbox/install")
 STATE_ANCESTRY = (pathlib.Path("/data"), pathlib.Path("/data/devbox"), STATE_DIR)
 ENV_FILE = STATE_DIR / "compose.env"
+# Named instances (install-devbox --instance NAME) live beside the default one: /data/devbox-NAME.
+INSTANCE_PARENT = pathlib.Path("/data")
 EXPECTED_STATE_OWNER = 0
 JSON_REQUESTED = "--json" in sys.argv[1:]
+# Keep in sync with INSTANCE_RE / RESERVED_INSTANCES / PORT_RE in scripts/install-devbox
+# (tests pin both). No hyphens or path characters: devbox-NAME stays a single path component
+# and can never equal another instance's devbox-OTHER-browser container.
+INSTANCE_PATTERN = r"[a-z][a-z0-9]{0,14}"
+RESERVED_INSTANCES = frozenset({"browser", "default", "devbox"})
+PORT_PATTERN = r"[1-9][0-9]{3,4}"
+DEFAULT_PORTS = frozenset({"8080", "2222", "8081"})
+BASE_SETTINGS = frozenset({"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"})
+INSTANCE_SETTINGS = frozenset({"DEVBOX_INSTANCE", "DEVBOX_PROJECT", "DEVBOX_CONTAINER", "DEVBOX_WEB_PORT", "DEVBOX_SSH_PORT"})
+
+
+class Target(NamedTuple):
+    """Which devbox a command inspects. The default reproduces the historical fixed values."""
+    instance: str | None
+    container: str
+    project: str | None
+    data_root: str
+    state_ancestry: tuple[pathlib.Path, ...]
+    env_file: pathlib.Path
+
+
+def default_target() -> Target:
+    return Target(None, "devbox", None, "/data/devbox", STATE_ANCESTRY, ENV_FILE)
+
+
+def valid_instance(name: str) -> bool:
+    return re.fullmatch(INSTANCE_PATTERN, name) is not None and name not in RESERVED_INSTANCES
+
+
+def instance_target(name: str) -> Target:
+    # Every path and name is derived ONLY from the validated name.
+    if not valid_instance(name):
+        raise ValueError("invalid instance name")
+    base = INSTANCE_PARENT / f"devbox-{name}"
+    state = base / "install"
+    return Target(name, f"devbox-{name}", f"devbox-{name}", f"/data/devbox-{name}", (INSTANCE_PARENT, base, state), state / "compose.env")
+
+
+def valid_ports(web: str | None, ssh: str | None, browser: str | None) -> bool:
+    """Instance host ports: decimal 1024-65535, pairwise distinct, never a default-instance port."""
+    chosen = [port for port in (web, ssh, browser) if port is not None]
+    if web is None or ssh is None or len(set(chosen)) != len(chosen):
+        return False
+    return all(
+        re.fullmatch(PORT_PATTERN, port) is not None and 1024 <= int(port) <= 65535 and port not in DEFAULT_PORTS
+        for port in chosen
+    )
+
+
+def instance_summary(target: Target, ports: dict[str, str] | None = None) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "name": target.instance,
+        "project": target.project,
+        "container": target.container,
+        "data_root": target.data_root,
+    }
+    if ports:
+        summary.update(ports)
+    return summary
 
 
 def check(check_id: str, passed: bool, summary: str) -> dict[str, str]:
@@ -175,7 +236,7 @@ def git_result(arguments: list[str]) -> subprocess.CompletedProcess[str]:
     ], clean=True)
 
 
-def preflight(as_json: bool) -> int:
+def preflight(as_json: bool, target: Target) -> int:
     checks: list[dict[str, str]] = []
     uname = available("uname")
     linux = bool(uname and run([uname, "-s"], clean=True).stdout.strip() == "Linux")
@@ -201,6 +262,8 @@ def preflight(as_json: bool) -> int:
         "network": {"web_bind": "127.0.0.1", "ssh_bind": "127.0.0.1"},
         "checks": checks,
     }
+    if target.instance:
+        report["instance"] = instance_summary(target)
     if as_json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -209,9 +272,31 @@ def preflight(as_json: bool) -> int:
     return 0 if report["ok"] else 1
 
 
-def plan(as_json: bool, approved_commit: str, expose_ssh: bool, with_browser: bool) -> int:
+def plan(
+    as_json: bool,
+    approved_commit: str,
+    expose_ssh: bool,
+    with_browser: bool,
+    target: Target,
+    web_port: str | None = None,
+    ssh_port: str | None = None,
+    browser_port: str | None = None,
+) -> int:
     if not re.fullmatch(r"[0-9a-f]{40}", approved_commit):
         return emit_error("plan", "--approved-commit requires an exact 40-character lowercase commit SHA", 2, as_json)
+    if not target.instance:
+        if web_port is not None or ssh_port is not None or browser_port is not None:
+            return emit_error("plan", "--web-port, --ssh-port and --browser-port require --instance", 2, as_json)
+        web_port, ssh_port, browser_port = "8080", "2222", "8081"
+    else:
+        if (browser_port is not None) != with_browser or not valid_ports(web_port, ssh_port, browser_port):
+            return emit_error(
+                "plan",
+                "--instance requires --web-port and --ssh-port (and --browser-port iff --with-browser): "
+                "decimal 1024-65535, distinct, not 8080/2222/8081",
+                2,
+                as_json,
+            )
     commit = git_result(["cat-file", "-e", f"{approved_commit}^{{commit}}"])
     installer = git_result(["cat-file", "-e", f"{approved_commit}:scripts/install-devbox"])
     head = git_result(["rev-parse", "HEAD"])
@@ -230,37 +315,48 @@ def plan(as_json: bool, approved_commit: str, expose_ssh: bool, with_browser: bo
         command += " --expose-ssh"
     if with_browser:
         command += " --with-browser"
+    if target.instance:
+        command += f" --instance {target.instance} --web-port {web_port} --ssh-port {ssh_port}"
+        if with_browser:
+            command += f" --browser-port {browser_port}"
     network = {"web_bind": "127.0.0.1", "ssh_bind": ssh_bind}
     if with_browser:
-        network["browser_bind"] = "127.0.0.1:8081"
-    report = {
+        network["browser_bind"] = f"127.0.0.1:{browser_port}"
+    report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "command": "plan",
         "ok": True,
         "mutates": False,
         "approved_commit": approved_commit,
         "source_path": "/opt/devbox-anywhere",
-        "data_root": "/data/devbox",
+        "data_root": target.data_root,
         "network": network,
         "approval_required": approvals,
         "install_command": command,
     }
+    if target.instance:
+        ports = {"web_port": web_port, "ssh_port": ssh_port}
+        if with_browser:
+            ports["browser_port"] = browser_port
+        report["instance"] = instance_summary(target, ports)
     if as_json:
         print(json.dumps(report, sort_keys=True))
     else:
         print(f"Approved commit: {approved_commit}")
-        listeners = f"Web: 127.0.0.1:8080; SSH: {ssh_bind}:2222"
+        listeners = f"Web: 127.0.0.1:{web_port}; SSH: {ssh_bind}:{ssh_port}"
         if with_browser:
-            listeners += "; Browser: 127.0.0.1:8081"
+            listeners += f"; Browser: 127.0.0.1:{browser_port}"
         print(listeners)
         print(f"Command after approval: {command}")
     return 0
 
 
-def deployment_settings() -> dict[str, str]:
-    allowed = {"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"}
+def deployment_settings(target: Target) -> dict[str, str]:
+    allowed = set(BASE_SETTINGS)
+    if target.instance:
+        allowed |= INSTANCE_SETTINGS | {"DEVBOX_BROWSER_PORT"}
     settings: dict[str, str] = {}
-    for path in STATE_ANCESTRY:
+    for path in target.state_ancestry:
         try:
             state = path.lstat()
         except OSError:
@@ -271,7 +367,7 @@ def deployment_settings() -> dict[str, str]:
             return settings
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(ENV_FILE, flags)
+        descriptor = os.open(target.env_file, flags)
     except OSError:
         return settings
     try:
@@ -294,22 +390,44 @@ def deployment_settings() -> dict[str, str]:
             if key in settings:
                 return {}
             settings[key] = value
-    if settings.get("DEVBOX_DATA_ROOT") != "/data/devbox":
+    if settings.get("DEVBOX_DATA_ROOT") != target.data_root:
         return {}
     if settings.get("DEVBOX_WEB_BIND") != "127.0.0.1":
         return {}
     if settings.get("DEVBOX_SSH_BIND") not in {"127.0.0.1", "0.0.0.0"}:
         return {}
+    if target.instance:
+        if not INSTANCE_SETTINGS <= set(settings):
+            return {}
+        if (settings["DEVBOX_INSTANCE"], settings["DEVBOX_PROJECT"], settings["DEVBOX_CONTAINER"]) != (
+            target.instance, target.project, target.container,
+        ):
+            return {}
+        if not valid_ports(settings["DEVBOX_WEB_PORT"], settings["DEVBOX_SSH_PORT"], settings.get("DEVBOX_BROWSER_PORT")):
+            return {}
     return settings
 
 
-def verify_report() -> dict[str, Any]:
+def expected_ports(target: Target, settings: dict[str, str]) -> tuple[str, str]:
+    """Host (web, ssh) ports the target's container must publish."""
+    if target.instance:
+        return settings.get("DEVBOX_WEB_PORT", ""), settings.get("DEVBOX_SSH_PORT", "")
+    return "8080", "2222"
+
+
+def verify_report(target: Target) -> dict[str, Any]:
     checks: list[dict[str, str]] = []
-    settings = deployment_settings()
-    state_ok = set(settings) == {"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"}
+    settings = deployment_settings(target)
+    if target.instance:
+        state_ok = BASE_SETTINGS | INSTANCE_SETTINGS <= set(settings)
+    else:
+        state_ok = set(settings) == {"DEVBOX_DATA_ROOT", "DEVBOX_WEB_BIND", "DEVBOX_SSH_BIND"}
+    container = target.container
     checks.append(check("state.file", state_ok, "installer state and ancestry are safe" if state_ok else "installer state or ancestry is missing or unsafe"))
     docker = available("docker")
     if not docker:
+        if target.instance:
+            checks.append(check("container.project", False, "Docker is missing"))
         for check_id, summary in (
             ("container.running", "Docker is missing"),
             ("network.bindings", "Docker is missing"),
@@ -328,19 +446,30 @@ def verify_report() -> dict[str, Any]:
         def docker_ok(arguments: list[str]) -> bool:
             return docker_result(docker, arguments).returncode == 0
 
-        running_result = docker_result(docker, ["inspect", "-f", "{{.State.Running}}", "devbox"])
+        if target.instance:
+            # A named instance's container must belong to its own Compose project, never to a
+            # hand-made container that merely reuses the name.
+            project_result = docker_result(docker, ["inspect", "--format", '{{index .Config.Labels "com.docker.compose.project"}}', container])
+            project_ok = project_result.returncode == 0 and project_result.stdout.strip() == target.project
+            checks.append(check(
+                "container.project",
+                project_ok,
+                f"{container} belongs to Compose project {target.project}" if project_ok else f"{container} is not managed by Compose project {target.project}",
+            ))
+        running_result = docker_result(docker, ["inspect", "-f", "{{.State.Running}}", container])
         running = running_result.returncode == 0 and running_result.stdout.strip() == "true"
-        checks.append(check("container.running", running, "devbox container is running" if running else "devbox container is not running"))
-        bindings_result = docker_result(docker, ["inspect", "--format", "{{json .NetworkSettings.Ports}}", "devbox"])
+        checks.append(check("container.running", running, f"{container} container is running" if running else f"{container} container is not running"))
+        bindings_result = docker_result(docker, ["inspect", "--format", "{{json .NetworkSettings.Ports}}", container])
         bindings_ok = False
         if bindings_result.returncode == 0 and state_ok:
             try:
                 actual_bindings = json.loads(bindings_result.stdout)
             except (json.JSONDecodeError, TypeError):
                 actual_bindings = None
+            web_port, ssh_port = expected_ports(target, settings)
             expected_bindings = {
-                "8080/tcp": [{"HostIp": settings["DEVBOX_WEB_BIND"], "HostPort": "8080"}],
-                "22/tcp": [{"HostIp": settings["DEVBOX_SSH_BIND"], "HostPort": "2222"}],
+                "8080/tcp": [{"HostIp": settings["DEVBOX_WEB_BIND"], "HostPort": web_port}],
+                "22/tcp": [{"HostIp": settings["DEVBOX_SSH_BIND"], "HostPort": ssh_port}],
             }
             bindings_ok = actual_bindings == expected_bindings
         checks.append(check(
@@ -348,7 +477,7 @@ def verify_report() -> dict[str, Any]:
             bindings_ok,
             "Docker port bindings match installer state" if bindings_ok else "Docker port bindings differ from installer state",
         ))
-        mounts_result = docker_result(docker, ["inspect", "--format", "{{json .Mounts}}", "devbox"])
+        mounts_result = docker_result(docker, ["inspect", "--format", "{{json .Mounts}}", container])
         mounts_ok = False
         if mounts_result.returncode == 0:
             try:
@@ -356,11 +485,14 @@ def verify_report() -> dict[str, Any]:
             except (json.JSONDecodeError, TypeError):
                 mounts = None
             expected_mounts = {
-                ("/data/devbox/project", "/home/coder/project"),
-                ("/data/devbox/dot-local", "/home/coder/.local"),
-                ("/data/devbox/claude", "/home/coder/.claude"),
-                ("/data/devbox/codex", "/home/coder/.codex"),
-                ("/data/devbox/ssh", "/home/coder/.ssh"),
+                (f"{target.data_root}/{leaf}", destination)
+                for leaf, destination in (
+                    ("project", "/home/coder/project"),
+                    ("dot-local", "/home/coder/.local"),
+                    ("claude", "/home/coder/.claude"),
+                    ("codex", "/home/coder/.codex"),
+                    ("ssh", "/home/coder/.ssh"),
+                )
             }
             if isinstance(mounts, list) and len(mounts) == len(expected_mounts):
                 actual_mounts = {
@@ -375,17 +507,17 @@ def verify_report() -> dict[str, Any]:
             "Docker mounts match fixed persistent paths" if mounts_ok else "Docker mounts differ from fixed persistent paths",
         ))
         for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"):
-            ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"])
+            ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"])
             checks.append(check(f"helper.{helper}", ok, f"{helper} helper is executable" if ok else f"{helper} helper is unavailable"))
-        http_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"])
-        ssh_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"])
+        http_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"])
+        ssh_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"])
         checks.append(check("service.http", http_ok, "code-server responds inside the container" if http_ok else "code-server readiness failed"))
         checks.append(check("service.ssh", ssh_ok, "SSH responds inside the container" if ssh_ok else "SSH readiness failed"))
 
         # relink.targets (warn-only): every symlink devbox-relink manages must resolve. A dangling
         # or missing target is surfaced as a warn naming the path -- previously invisible (a
         # dangling ~/.hermes still returned ok: true).
-        relink_probe = docker_result(docker, ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", RELINK_TARGETS_PROBE])
+        relink_probe = docker_result(docker, ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/bin/sh", "-c", RELINK_TARGETS_PROBE])
         if relink_probe.returncode == 0:
             dangling = [line[len("DANGLING "):] for line in relink_probe.stdout.splitlines() if line.startswith("DANGLING ")]
             if dangling:
@@ -397,7 +529,7 @@ def verify_report() -> dict[str, Any]:
 
         # daemon.<name> (warn-only): each declared daemon should be running. Absent daemons.d ->
         # no daemon checks (skipped, not failed). A declared-but-down daemon is a warn.
-        daemon_probe = docker_result(docker, ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", DAEMON_DECLARED_PROBE])
+        daemon_probe = docker_result(docker, ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/bin/sh", "-c", DAEMON_DECLARED_PROBE])
         if daemon_probe.returncode == 0:
             for line in daemon_probe.stdout.splitlines():
                 if not line.strip():
@@ -409,7 +541,7 @@ def verify_report() -> dict[str, Any]:
                     continue
                 running = state == "running"
                 checks.append(warn_check(f"daemon.{name}", running, f"{name} daemon is running" if running else f"{name} daemon is declared but not running"))
-    return {
+    report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "command": "verify",
         "ok": all(item["status"] != "fail" for item in checks),
@@ -419,10 +551,16 @@ def verify_report() -> dict[str, Any]:
         },
         "checks": checks,
     }
+    if target.instance:
+        report["instance"] = instance_summary(target, {
+            "web_port": settings.get("DEVBOX_WEB_PORT", "unknown"),
+            "ssh_port": settings.get("DEVBOX_SSH_PORT", "unknown"),
+        })
+    return report
 
 
-def verify(as_json: bool) -> int:
-    report = verify_report()
+def verify(as_json: bool, target: Target) -> int:
+    report = verify_report(target)
     if as_json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -431,16 +569,18 @@ def verify(as_json: bool) -> int:
     return 0 if report["ok"] else 1
 
 
-def diagnose(as_json: bool) -> int:
-    verification = verify_report()
+def diagnose(as_json: bool, target: Target) -> int:
+    verification = verify_report(target)
     failed = [item["id"] for item in verification["checks"] if item["status"] == "fail"]
     clean_docker = f"sudo env -i PATH={SAFE_PATH} HOME=/root LANG=C LC_ALL=C DOCKER_CONFIG={DOCKER_CONFIG} docker --context default"
+    project = f"-p {target.project} " if target.project else ""
+    selector = f" --instance {target.instance}" if target.instance else ""
     recovery = [
-        f"{clean_docker} logs devbox",
-        f"{clean_docker} compose --env-file {ENV_FILE} -f {SOURCE_ROOT / 'stack/docker-compose.yml'} ps",
-        "./scripts/devbox-anywhere verify --json",
+        f"{clean_docker} logs {target.container}",
+        f"{clean_docker} compose {project}--env-file {target.env_file} -f {SOURCE_ROOT / 'stack/docker-compose.yml'} ps",
+        f"./scripts/devbox-anywhere verify --json{selector}",
     ]
-    report = {
+    report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "command": "diagnose",
         "ok": not failed,
@@ -448,6 +588,8 @@ def diagnose(as_json: bool) -> int:
         "recovery_commands": recovery if failed else [],
         "note": "Commands may expose operational logs; inspect locally and do not paste credentials into chat.",
     }
+    if target.instance:
+        report["instance"] = verification["instance"]
     if as_json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -492,23 +634,36 @@ def parser() -> argparse.ArgumentParser:
     for name in ("preflight", "plan", "verify", "diagnose"):
         command = subcommands.add_parser(name)
         command.add_argument("--json", action="store_true", help="emit schema-versioned JSON")
+        command.add_argument("--instance", help="named instance (install-devbox --instance NAME)")
         if name == "plan":
             command.add_argument("--approved-commit", required=True)
             command.add_argument("--expose-ssh", action="store_true")
             command.add_argument("--with-browser", action="store_true")
+            command.add_argument("--web-port")
+            command.add_argument("--ssh-port")
+            command.add_argument("--browser-port")
     return result
 
 
 def main() -> int:
     args = parser().parse_args()
+    target = default_target()
+    if args.instance is not None:
+        # The rejected value is never echoed (same redaction rule as unknown options).
+        if not valid_instance(args.instance):
+            return emit_error(args.command, f"--instance must match {INSTANCE_PATTERN} and not be a reserved name", 2, args.json)
+        target = instance_target(args.instance)
     if args.command == "preflight":
-        return preflight(args.json)
+        return preflight(args.json, target)
     if args.command == "plan":
-        return plan(args.json, args.approved_commit, args.expose_ssh, args.with_browser)
+        return plan(
+            args.json, args.approved_commit, args.expose_ssh, args.with_browser, target,
+            args.web_port, args.ssh_port, args.browser_port,
+        )
     if args.command == "verify":
-        return verify(args.json)
+        return verify(args.json, target)
     if args.command == "diagnose":
-        return diagnose(args.json)
+        return diagnose(args.json, target)
     return not_implemented(args.command)
 
 

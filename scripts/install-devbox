@@ -11,6 +11,22 @@ ASSUME_YES=0
 DRY_RUN=0
 WITH_BROWSER=0
 APPROVED_COMMIT=
+# Named instances (opt-in): a second, independent devbox on the same server. Without
+# --instance every name, path, port and the Compose project stay exactly as before.
+INSTANCE=
+WEB_PORT=
+SSH_PORT=
+BROWSER_PORT=
+# Instance names: lowercase letter, then up to 14 lowercase letters/digits. No hyphens or
+# path characters, so devbox-NAME can never collide with devbox-OTHER-browser or escape /data.
+# Keep in sync with INSTANCE_PATTERN in scripts/devbox-anywhere (tests pin both).
+INSTANCE_RE='^[a-z][a-z0-9]{0,14}$'
+# Reserved: "browser" would yield devbox-browser (the default instance's browser container);
+# "default" and "devbox" are ambiguous with the default instance.
+RESERVED_INSTANCES="browser default devbox"
+PORT_RE='^[1-9][0-9]{3,4}$'
+# Host ports of the default instance; a named instance must never claim them.
+DEFAULT_PORTS="8080 2222 8081"
 
 usage() {
   cat <<'EOF'
@@ -27,6 +43,16 @@ Options:
   --approved-commit SHA exact reviewed commit authorized by the user
   -h, --help            show this help
 
+Named instance (opt-in; a second devbox on the same server):
+  --instance NAME       NAME matches ^[a-z][a-z0-9]{0,14}$ and is not browser, default
+                        or devbox. Uses data root /data/devbox-NAME, container devbox-NAME
+                        (browser: devbox-NAME-browser) and Compose project devbox-NAME.
+  --web-port N          loopback host port for code-server (required with --instance)
+  --ssh-port N          host port for SSH (required with --instance)
+  --browser-port N      loopback host port for noVNC (required iff --with-browser)
+Ports are decimal 1024-65535, pairwise distinct, never 8080/2222/8081 (the default
+instance), and must not already be listening. Port options require --instance.
+
 The installer never accepts passwords on the command line. It generates a random
 code-server password and stores it in an owner-only environment file.
 EOF
@@ -34,6 +60,9 @@ EOF
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need_arg() { [[ $# -ge 2 && -n ${2:-} ]] || die "$1 requires a value"; }
+# Byte-wise (C locale) matching so [a-z] can never admit uppercase or non-ASCII letters.
+matches() { local LC_ALL=C; [[ $1 =~ $2 ]]; }
+once() { [[ -z $2 ]] || die "$1 may be given only once"; }
 
 while (($#)); do
   case "$1" in
@@ -43,6 +72,10 @@ while (($#)); do
     --expose-ssh) SSH_BIND=0.0.0.0; shift ;;
     --with-browser) WITH_BROWSER=1; shift ;;
     --approved-commit) need_arg "$@"; APPROVED_COMMIT=$2; shift 2 ;;
+    --instance) need_arg "$@"; once "$1" "$INSTANCE"; INSTANCE=$2; shift 2 ;;
+    --web-port) need_arg "$@"; once "$1" "$WEB_PORT"; WEB_PORT=$2; shift 2 ;;
+    --ssh-port) need_arg "$@"; once "$1" "$SSH_PORT"; SSH_PORT=$2; shift 2 ;;
+    --browser-port) need_arg "$@"; once "$1" "$BROWSER_PORT"; BROWSER_PORT=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -50,23 +83,85 @@ done
 
 [[ $APPROVED_COMMIT =~ ^[0-9a-f]{40}$ ]] || die "--approved-commit requires an exact 40-character lowercase commit SHA"
 
+CONTAINER=devbox
+PROJECT=
+if [[ -z $INSTANCE ]]; then
+  [[ -z $WEB_PORT && -z $SSH_PORT && -z $BROWSER_PORT ]] \
+    || die "--web-port, --ssh-port and --browser-port require --instance"
+  WEB_PORT=8080
+  SSH_PORT=2222
+  BROWSER_PORT=8081
+else
+  matches "$INSTANCE" "$INSTANCE_RE" || die "--instance must match $INSTANCE_RE"
+  for reserved in $RESERVED_INSTANCES; do
+    [[ $INSTANCE != "$reserved" ]] || die "--instance name is reserved: $INSTANCE"
+  done
+  unset reserved
+  [[ -n $WEB_PORT && -n $SSH_PORT ]] || die "--instance requires --web-port and --ssh-port"
+  if ((WITH_BROWSER)); then
+    [[ -n $BROWSER_PORT ]] || die "--instance with --with-browser requires --browser-port"
+  else
+    [[ -z $BROWSER_PORT ]] || die "--browser-port requires --with-browser"
+  fi
+  # An array, never word splitting: " 9080" must be rejected, not silently trimmed.
+  chosen_ports=("$WEB_PORT" "$SSH_PORT")
+  if [[ -n $BROWSER_PORT ]]; then chosen_ports+=("$BROWSER_PORT"); fi
+  for port in "${chosen_ports[@]}"; do
+    matches "$port" "$PORT_RE" && ((port >= 1024 && port <= 65535)) \
+      || die "ports must be decimal integers from 1024 to 65535"
+    for reserved in $DEFAULT_PORTS; do
+      [[ $port != "$reserved" ]] || die "port $port belongs to the default instance"
+    done
+  done
+  [[ $WEB_PORT != "$SSH_PORT" && $WEB_PORT != "$BROWSER_PORT" && $SSH_PORT != "$BROWSER_PORT" ]] \
+    || die "--web-port, --ssh-port and --browser-port must be distinct"
+  unset port reserved
+  # Everything below is derived ONLY from the validated name.
+  DATA_ROOT=$DATA_ROOT-$INSTANCE
+  CONTAINER=devbox-$INSTANCE
+  PROJECT=devbox-$INSTANCE
+fi
+BROWSER_CONTAINER=$CONTAINER-browser
+
 STATE_DIR=$DATA_ROOT/install
 ENV_FILE=$STATE_DIR/compose.env
+# Non-secret instance settings persisted in compose.env (Compose reads the container name and
+# ports from them; the harness reads them back). Empty for the default instance, whose file
+# keeps exactly its historical contents.
+instance_settings=
+if [[ -n $INSTANCE ]]; then
+  instance_settings="DEVBOX_INSTANCE=$INSTANCE
+DEVBOX_PROJECT=$PROJECT
+DEVBOX_CONTAINER=$CONTAINER
+DEVBOX_WEB_PORT=$WEB_PORT
+DEVBOX_SSH_PORT=$SSH_PORT"
+  if ((WITH_BROWSER)); then
+    instance_settings="$instance_settings
+DEVBOX_BROWSER_PORT=$BROWSER_PORT"
+  fi
+fi
 
 cat <<EOF
 Devbox Anywhere installation plan
   repository: $REPO_ROOT
   approved commit: $APPROVED_COMMIT
   persistent data: $DATA_ROOT
-  browser: $WEB_BIND:8080 (HTTP; put authenticated HTTPS in front)
-  SSH: $SSH_BIND:2222 (key-only; no key is added automatically)
-  GUI browser (optional): $([[ $WITH_BROWSER == 1 ]] && printf '%s' "$WEB_BIND:8081 noVNC (enabled)" || printf 'disabled')
+  browser: $WEB_BIND:$WEB_PORT (HTTP; put authenticated HTTPS in front)
+  SSH: $SSH_BIND:$SSH_PORT (key-only; no key is added automatically)
+  GUI browser (optional): $([[ $WITH_BROWSER == 1 ]] && printf '%s' "$WEB_BIND:$BROWSER_PORT noVNC (enabled)" || printf 'disabled')
   credentials: $ENV_FILE (owner-only; value not printed)
   action: build and start stack/docker-compose.yml, then verify it
 EOF
+if [[ -n $INSTANCE ]]; then
+  cat <<EOF
+  instance: $INSTANCE
+  Compose project: $PROJECT
+  container: $CONTAINER$([[ $WITH_BROWSER == 1 ]] && printf '%s' " (browser: $BROWSER_CONTAINER)")
+EOF
+fi
 
 if [[ $SSH_BIND == 0.0.0.0 || $SSH_BIND == :: ]]; then
-  printf 'WARNING: SSH will listen on every interface. Restrict port 2222 with a firewall.\n'
+  printf 'WARNING: SSH will listen on every interface. Restrict port %s with a firewall.\n' "$SSH_PORT"
 fi
 
 if ((DRY_RUN)); then
@@ -77,15 +172,20 @@ DEVBOX_PASSWORD=<generated-or-preserved>
 DEVBOX_DATA_ROOT=$DATA_ROOT
 DEVBOX_WEB_BIND=$WEB_BIND
 DEVBOX_SSH_BIND=$SSH_BIND
-port: $WEB_BIND:8080:8080
-port: $SSH_BIND:2222:22
+EOF
+  if [[ -n $INSTANCE ]]; then
+    printf '%s\n' "$instance_settings"
+  fi
+  cat <<EOF
+port: $WEB_BIND:$WEB_PORT:8080
+port: $SSH_BIND:$SSH_PORT:22
 volume: $DATA_ROOT/project:/home/coder/project
 EOF
   if ((WITH_BROWSER)); then
     cat <<EOF
 DEVBOX_BROWSER_BIND=$WEB_BIND
 DEVBOX_BROWSER_PASSWORD=<generated-or-preserved>
-port: $WEB_BIND:8081:3000
+port: $WEB_BIND:$BROWSER_PORT:3000
 volume: $DATA_ROOT/browser:/config
 EOF
   fi
@@ -184,6 +284,47 @@ if [[ -f $ENV_FILE ]]; then
   (( (8#$env_mode & 0077) == 0 )) || die "$ENV_FILE must not be accessible to group/other"
   unset env_mode
 fi
+
+if [[ -n $INSTANCE ]]; then
+  # Never adopt a container this instance did not create: an existing devbox-NAME (or its
+  # browser container) must carry this instance's Compose project label, or we stop before
+  # Compose could recreate it. One listing of every container; any unexpected shape fails.
+  container_list=$("${docker_cmd[@]}" container ls --all --format '{{.Names}} {{.Label "com.docker.compose.project"}}') \
+    || die "could not list existing containers"
+  while read -r listed_name listed_project listed_extra; do
+    if [[ $listed_name == "$CONTAINER" || $listed_name == "$BROWSER_CONTAINER" ]]; then
+      [[ $listed_project == "$PROJECT" && -z $listed_extra ]] \
+        || die "container $listed_name exists but is not managed by Compose project $PROJECT; refusing to touch it"
+    fi
+  done <<<"$container_list"
+  unset container_list listed_name listed_project listed_extra
+  # Refuse host ports that something is already listening on. Ports this instance recorded
+  # on a previous run are exempt (its own container holds them; Compose fails closed if not).
+  owned_ports=
+  if [[ -f $ENV_FILE ]]; then
+    while IFS= read -r env_line; do
+      case $env_line in
+        DEVBOX_WEB_PORT=*|DEVBOX_SSH_PORT=*|DEVBOX_BROWSER_PORT=*) owned_ports="$owned_ports ${env_line#*=}" ;;
+      esac
+    done <"$ENV_FILE"
+    unset env_line
+  fi
+  command -v ss >/dev/null || die "ss is required to check that the chosen ports are free"
+  listening=$(ss -Hltn) || die "could not list listening TCP ports"
+  listening_ports=
+  while read -r _ _ _ local_address _; do
+    [[ -n $local_address ]] || continue
+    listened=${local_address##*:}
+    matches "$listened" '^[0-9]+$' || die "unexpected listening socket line from ss"
+    listening_ports="$listening_ports $listened"
+  done <<<"$listening"
+  for port in "${chosen_ports[@]}"; do
+    [[ " $owned_ports " != *" $port "* ]] || continue
+    [[ "$listening_ports " != *" $port "* ]] || die "host port $port is already in use"
+  done
+  unset owned_ports listening listening_ports local_address listened port
+fi
+
 tmp_env=$(mktemp "$STATE_DIR/compose.env.XXXXXX")
 chmod 0600 "$tmp_env"
 trap 'rm -f "$tmp_env"' EXIT
@@ -209,6 +350,7 @@ DEVBOX_BROWSER_BIND=$WEB_BIND
 $browser_pw_line
 EOF
   unset password
+  if [[ -n $INSTANCE ]]; then printf '%s\n' "$instance_settings" >>"$tmp_env"; fi
 else
   grep -q '^DEVBOX_PASSWORD=' "$ENV_FILE" || die "$ENV_FILE lacks DEVBOX_PASSWORD"
   # Preserve the password but refresh non-secret deployment settings.
@@ -222,12 +364,19 @@ DEVBOX_BROWSER_BIND=$WEB_BIND
 $browser_pw_line
 EOF
   unset password_line
+  if [[ -n $INSTANCE ]]; then printf '%s\n' "$instance_settings" >>"$tmp_env"; fi
 fi
 unset browser_pw_line
 mv -f "$tmp_env" "$ENV_FILE"
 trap - EXIT HUP INT TERM
 
-compose=("${docker_cmd[@]}" compose --env-file "$ENV_FILE" -f "$REPO_ROOT/stack/docker-compose.yml")
+compose=("${docker_cmd[@]}" compose)
+# A named instance always passes its project explicitly. The default instance keeps the
+# directory-derived project ("stack") so existing installs are never re-created.
+if [[ -n $INSTANCE ]]; then
+  compose+=(-p "$PROJECT")
+fi
+compose+=(--env-file "$ENV_FILE" -f "$REPO_ROOT/stack/docker-compose.yml")
 if ((WITH_BROWSER)); then
   compose+=(--profile browser)
 fi
@@ -263,17 +412,17 @@ if [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
 fi
 install -m 0755 "$src" "$dst"'
 for helper in $helpers; do
-  "${docker_cmd[@]}" cp "$REPO_ROOT/scripts/$helper" "devbox:/tmp/$helper"
-  "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+  "${docker_cmd[@]}" cp "$REPO_ROOT/scripts/$helper" "$CONTAINER:/tmp/$helper"
+  "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin "$CONTAINER" \
     /bin/sh -c "$preserve_install_blob" _ "$helper" /home/coder/.local/bin
-  "${docker_cmd[@]}" exec --user root --env PATH=/usr/sbin:/usr/bin:/sbin:/bin devbox /usr/bin/rm -f "/tmp/$helper"
+  "${docker_cmd[@]}" exec --user root --env PATH=/usr/sbin:/usr/bin:/sbin:/bin "$CONTAINER" /usr/bin/rm -f "/tmp/$helper"
 done
 # A3: ensure the upgrade-safe operator drop-in dir exists at 0700. Created only if absent
 # (mkdir -p is a no-op when present); the installer never writes into it.
-"${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+"${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin "$CONTAINER" \
   /usr/bin/mkdir -p -m 0700 /home/coder/.local/share/devbox-relink.d
 # C2: the declared-daemon drop-in dir, same 0700, never written into by the installer.
-"${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+"${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin "$CONTAINER" \
   /usr/bin/mkdir -p -m 0700 /home/coder/.local/share/devbox-daemons.d
 
 # Build the readiness probe from the same helper list so it always matches what we installed.
@@ -283,51 +432,51 @@ for helper in $helpers; do
 done
 
 for attempt in $(seq 1 30); do
-  if [[ $("${docker_cmd[@]}" inspect -f '{{.State.Running}}' devbox 2>/dev/null) == true ]] \
-    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox /bin/sh -c \
+  if [[ $("${docker_cmd[@]}" inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null) == true ]] \
+    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin "$CONTAINER" /bin/sh -c \
       "$readiness" 2>/dev/null \
-    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin "$CONTAINER" \
       /usr/bin/wget -q --spider http://127.0.0.1:8080/ 2>/dev/null \
-    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin devbox \
+    && "${docker_cmd[@]}" exec --user coder --env PATH=/usr/bin:/bin "$CONTAINER" \
       /usr/bin/ssh-keyscan -T 2 -p 22 127.0.0.1 >/dev/null 2>&1; then
     break
   fi
-  [[ $attempt -lt 30 ]] || die "container did not become ready; inspect: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default logs devbox"
+  [[ $attempt -lt 30 ]] || die "container did not become ready; inspect: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default logs $CONTAINER"
   sleep 2
 done
 
 cat <<EOF
 
 Installation complete.
-  Browser (local/server): http://$WEB_BIND:8080
+  Browser (local/server): http://$WEB_BIND:$WEB_PORT
   Password file: $ENV_FILE
   Read password locally: sudo sed -n 's/^DEVBOX_PASSWORD=//p' '$ENV_FILE'
   Add an SSH public key: sudo sh -c 'cat >> "$DATA_ROOT/ssh/authorized_keys"'
-  Status: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default compose --env-file '$ENV_FILE' -f '$REPO_ROOT/stack/docker-compose.yml' ps
+  Status: sudo env -i PATH=$SAFE_PATH HOME=/root DOCKER_CONFIG=$DOCKER_CONFIG docker --context default compose ${PROJECT:+-p $PROJECT }--env-file '$ENV_FILE' -f '$REPO_ROOT/stack/docker-compose.yml' ps
 EOF
 
 if [[ $SSH_BIND == 127.0.0.1 ]]; then
-  cat <<'EOF'
+  cat <<EOF
   Default private SSH access:
-    1. ssh -L 2222:127.0.0.1:2222 HOST_USER@SERVER_ADDRESS
-    2. In another terminal: ssh -p 2222 coder@127.0.0.1
+    1. ssh -L $SSH_PORT:127.0.0.1:$SSH_PORT HOST_USER@SERVER_ADDRESS
+    2. In another terminal: ssh -p $SSH_PORT coder@127.0.0.1
 EOF
 else
-  printf '  Direct SSH after adding a key: ssh -p 2222 coder@SERVER_ADDRESS\n'
+  printf '  Direct SSH after adding a key: ssh -p %s coder@SERVER_ADDRESS\n' "$SSH_PORT"
 fi
 
 if ((WITH_BROWSER)); then
   cat <<EOF
 
-  Interactive browser (noVNC), loopback-only on $WEB_BIND:8081:
+  Interactive browser (noVNC), loopback-only on $WEB_BIND:$BROWSER_PORT:
     Read noVNC password locally: sudo sed -n 's/^DEVBOX_BROWSER_PASSWORD=//p' '$ENV_FILE'
-    Reach it privately: ssh -L 8081:127.0.0.1:8081 HOST_USER@SERVER_ADDRESS then open http://127.0.0.1:8081
-  Never expose port 8081 publicly. See docs/12-browser-and-auth.md.
+    Reach it privately: ssh -L $BROWSER_PORT:127.0.0.1:$BROWSER_PORT HOST_USER@SERVER_ADDRESS then open http://127.0.0.1:$BROWSER_PORT
+  Never expose port $BROWSER_PORT publicly. See docs/12-browser-and-auth.md.
 EOF
 fi
 
-cat <<'EOF'
+cat <<EOF
 
-Do not expose port 8080 directly. Put authenticated HTTPS in front of it or keep it
+Do not expose port $WEB_PORT directly. Put authenticated HTTPS in front of it or keep it
 loopback-only. Expose SSH only after configuring a restrictive firewall.
 EOF

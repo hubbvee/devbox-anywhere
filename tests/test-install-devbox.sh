@@ -32,6 +32,47 @@ if $INSTALLER --dry-run --yes --approved-commit "$SHA" --data-root /tmp/devbox >
   fail "removed arbitrary data-root option was accepted"
 fi
 
+# Named instance (opt-in): everything derives from the validated name; ports are explicit.
+grep -q -- '--instance NAME' <<<"$help" || fail "help omits --instance"
+grep -q -- '--web-port N' <<<"$help" || fail "help omits --web-port"
+grep -q -- '--ssh-port N' <<<"$help" || fail "help omits --ssh-port"
+grep -q -- '--browser-port N' <<<"$help" || fail "help omits --browser-port"
+ports=(--web-port 9080 --ssh-port 9022)
+instance_plan=$($INSTALLER --dry-run --yes --approved-commit "$SHA" --instance myapp "${ports[@]}")
+grep -q 'port: 127.0.0.1:9080:8080' <<<"$instance_plan" || fail "instance web port is not loopback 9080"
+grep -q 'port: 127.0.0.1:9022:22' <<<"$instance_plan" || fail "instance SSH port is not loopback 9022"
+grep -q '/data/devbox-myapp/project:/home/coder/project' <<<"$instance_plan" || fail "instance data root is missing"
+grep -q 'Compose project: devbox-myapp' <<<"$instance_plan" || fail "instance project is missing"
+grep -q 'DEVBOX_CONTAINER=devbox-myapp' <<<"$instance_plan" || fail "instance container is missing"
+! grep -Eq 'PASSWORD=[^<]' <<<"$instance_plan" || fail "instance dry run disclosed a password"
+! grep -q '/data/devbox/' <<<"$instance_plan" || fail "instance dry run references the default data root"
+
+reject() {
+  if $INSTALLER --dry-run --yes --approved-commit "$SHA" "$@" >/dev/null 2>&1; then
+    fail "accepted: $*"
+  fi
+}
+for name in MyApp my-app my/app ../app my.app 1app aaaaaaaaaaaaaaaa browser default devbox ''; do
+  reject --instance "$name" "${ports[@]}"
+done
+reject --instance myapp
+reject --instance myapp --web-port 9080
+reject --instance myapp --ssh-port 9022
+reject --instance myapp --web-port 9080 --ssh-port 9080
+reject --instance myapp --web-port 1023 --ssh-port 9022
+reject --instance myapp --web-port 65536 --ssh-port 9022
+reject --instance myapp --web-port 09080 --ssh-port 9022
+reject --instance myapp --web-port 8080 --ssh-port 9022
+reject --instance myapp --web-port 9080 --ssh-port 2222
+reject --instance myapp --web-port 8081 --ssh-port 9022
+reject --instance myapp "${ports[@]}" --with-browser
+reject --instance myapp "${ports[@]}" --browser-port 9081
+reject --instance myapp "${ports[@]}" --with-browser --browser-port 9022
+reject --web-port 9080
+reject --ssh-port 9022
+reject --with-browser --browser-port 9081
+reject --instance myapp "${ports[@]}" --data-root /tmp/devbox
+
 if $INSTALLER --dry-run --approved-commit "$SHA" </dev/null >/dev/null 2>&1; then
   fail "noninteractive run proceeded without --yes"
 fi

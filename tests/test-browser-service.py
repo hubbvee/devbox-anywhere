@@ -34,9 +34,14 @@ if service_names != ["devbox", "browser"]:
 if not re.search(r'(?ms)^  browser:\s*\n(?:.*\n)*?    profiles:\s*\n      - "?browser"?\s*$', text):
     fail("browser service must be gated behind the 'browser' Compose profile")
 
-# noVNC binds loopback:8081 (host) -> 3000 (KasmVNC HTTP in the container).
-if not re.search(r'(?m)^\s{6}- "\$\{DEVBOX_BROWSER_BIND:-127\.0\.0\.1\}:8081:3000"', text):
-    fail("browser noVNC must bind ${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000")
+# noVNC binds loopback:8081 (host) -> 3000 (KasmVNC HTTP in the container). A named instance
+# only swaps the host port; the bind address variable and its loopback default are unchanged.
+if not re.search(r'(?m)^\s{6}- "\$\{DEVBOX_BROWSER_BIND:-127\.0\.0\.1\}:\$\{DEVBOX_BROWSER_PORT:-8081\}:3000"', text):
+    fail("browser noVNC must bind ${DEVBOX_BROWSER_BIND:-127.0.0.1}:${DEVBOX_BROWSER_PORT:-8081}:3000")
+
+# The default container name stays devbox-browser; an instance derives devbox-NAME-browser.
+if not re.search(r'(?m)^    container_name: \$\{DEVBOX_CONTAINER:-devbox\}-browser$', text):
+    fail("browser container name must be ${DEVBOX_CONTAINER:-devbox}-browser")
 
 # The VNC password comes from the env file, never a literal in the compose file.
 if not re.search(r"(?m)^\s{6}- PASSWORD=\$\{DEVBOX_BROWSER_PASSWORD:\?", text):

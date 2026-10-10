@@ -7,18 +7,22 @@
 # data dirs owned by uid/gid 1000 (the `coder` user):
 #   sudo mkdir -p /data/devbox/{project,dot-local,claude,codex,ssh}
 #   sudo chown -R 1000:1000 /data/devbox
+#
+# Container names and host ports come from variables whose defaults are the historical
+# literals (devbox, devbox-browser, 8080, 2222, 8081). Only `install-devbox --instance NAME`
+# sets them, together with an explicit Compose project (-p devbox-NAME).
 
 services:
   devbox:
     build: .
-    container_name: devbox
+    container_name: ${DEVBOX_CONTAINER:-devbox}
     restart: unless-stopped
     environment:
       # Web login password for code-server. Put a long random one here or in an .env file.
       - PASSWORD=${DEVBOX_PASSWORD:?set DEVBOX_PASSWORD in .env}
     ports:
-      - "${DEVBOX_WEB_BIND:-127.0.0.1}:8080:8080" # keep loopback-only; proxy adds HTTPS
-      - "${DEVBOX_SSH_BIND:-127.0.0.1}:2222:22"   # opt in explicitly before public exposure
+      - "${DEVBOX_WEB_BIND:-127.0.0.1}:${DEVBOX_WEB_PORT:-8080}:8080" # keep loopback-only; proxy adds HTTPS
+      - "${DEVBOX_SSH_BIND:-127.0.0.1}:${DEVBOX_SSH_PORT:-2222}:22"   # opt in explicitly before public exposure
     volumes:
       # HOST BIND MOUNTS, not named volumes. Named volumes are keyed to the app instance
       # and silently start empty after a delete+recreate; fixed host paths survive
@@ -37,7 +41,7 @@ services:
     profiles:
       - browser
     image: linuxserver/chromium@sha256:4c7b9086d2e5054b61c9e6b0f75efceece5befeff2bec3ff543d52e000cee21d
-    container_name: devbox-browser
+    container_name: ${DEVBOX_CONTAINER:-devbox}-browser
     restart: unless-stopped
     shm_size: "1gb"
     security_opt:
@@ -48,7 +52,7 @@ services:
       - PUID=1000
       - PGID=1000
     ports:
-      - "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000" # loopback-only; never expose publicly (KasmVNC HTTP=3000)
+      - "${DEVBOX_BROWSER_BIND:-127.0.0.1}:${DEVBOX_BROWSER_PORT:-8081}:3000" # loopback-only; never expose publicly (KasmVNC HTTP=3000)
     volumes:
       # Persist the browser profile (cookies/sessions) so completed logins survive rebuilds.
       - ${DEVBOX_DATA_ROOT:-/data/devbox}/browser:/config
