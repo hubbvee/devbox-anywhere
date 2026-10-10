@@ -124,6 +124,21 @@ CASES = [
     ("relink-missing-dir-source-mkdir", "scripts/devbox-relink", 'mkdir -p "$HOME/.local/share/gh-config" "$HOME/.local/share/terminfo"', ':', ["python3", "tests/test-relink-targets-probe.py"], "must land in the persisted store"),
     ("relink-probe-absent-link-passes", "scripts/devbox-anywhere", 'if [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', 'if [ -e "$l" ] && [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', ["python3", "tests/test-relink-targets-probe.py"], "an absent shipped link must be flagged"),
     ("sshd-penalty-exempt-removed", "stack/config/devbox-sshd.conf", 'PerSourcePenaltyExemptList 127.0.0.1,::1', '# PerSourcePenaltyExemptList 127.0.0.1,::1', ["python3", "tests/test-ssh-penalty-exempt.py"], "PerSourcePenaltyExemptList"),
+    ("gate-charset-check-dropped", "scripts/devbox-status-gate", '  *[!A-Za-z0-9._\\ -]*) deny charset ;;\n', '', ["python3", "tests/test-status-gate.py"], "gate_deny_reason"),
+    ("gate-length-check-dropped", "scripts/devbox-status-gate", '[ "${#req}" -le 80 ] || deny length', ':', ["python3", "tests/test-status-gate.py"], "gate_deny_reason"),
+    ("gate-project-dash-dot-accepted", "scripts/devbox-status-gate", '    -*|.*) deny project ;;\n', '', ["python3", "tests/test-status-gate.py"], "gate_hostile_not_denied"),
+    ("gate-env-scrub-dropped", "scripts/devbox-status-gate", 'exec /usr/bin/env -i HOME=', 'exec /usr/bin/env HOME=', ["python3", "tests/test-status-gate.py"], "gate_env_scrubbed"),
+    ("gate-path-not-fixed", "scripts/devbox-status-gate", 'SAFE_PATH=/usr/bin:/bin\n', 'SAFE_PATH=$PATH\n', ["python3", "tests/test-status-gate.py"], "gate_fixed_path"),
+    ("gate-helper-via-path", "scripts/devbox-status-gate", 'session=$bindir/devbox-session', 'session=$(command -v devbox-session || true)', ["python3", "tests/test-status-gate.py"], "gate_allowed_exec"),
+    ("gate-symlink-helper-accepted", "scripts/devbox-status-gate", '  [ ! -L "$1" ] || return 1\n', '', ["python3", "tests/test-status-gate.py"], "gate_symlink_helper_denied"),
+    ("gate-shared-dir-accepted", "scripts/devbox-status-gate", 'owned_not_shared "$bindir" || deny helper', ':', ["python3", "tests/test-status-gate.py"], "gate_shared_dir_denied"),
+    ("gate-allow-log-fail-open", "scripts/devbox-status-gate", 'audit allow "$1" || deny log-failed', 'audit allow "$1" || true', ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed"),
+    ("gate-deny-echoes-request", "scripts/devbox-status-gate", "printf 'devbox-status-gate: denied\\n' >&2", "printf 'devbox-status-gate: denied: %s\\n' \"$req\" >&2", ["python3", "tests/test-status-gate.py"], "gate_deny_no_echo"),
+    ("gate-umask-loosened", "scripts/devbox-status-gate", 'umask 077\n', 'umask 022\n', ["python3", "tests/test-status-gate.py"], "gate_log_dir_mode"),
+    ("gate-log-chmod-dropped", "scripts/devbox-status-gate", 'chmod 600 "$log" 2>/dev/null || return 1', ':', ["python3", "tests/test-status-gate.py"], "gate_log_mode_tightened"),
+    ("gate-log-rotation-dropped", "scripts/devbox-status-gate", 'mv -f -- "$log" "$log.1" 2>/dev/null || return 1', ':', ["python3", "tests/test-status-gate.py"], "gate_log_rotated"),
+    ("gate-log-unsanitized", "scripts/devbox-status-gate", "shown=$(printf '%s' \"${req:0:200}\" | LC_ALL=C tr -c ' -~' '?')", 'shown=${req:0:200}', ["python3", "tests/test-status-gate.py"], "gate_log_sanitized"),
+    ("gate-eval-exec", "scripts/devbox-status-gate", 'exec /usr/bin/env -i HOME=', 'eval exec /usr/bin/env -i HOME=', ["python3", "tests/test-status-gate.py"], "gate_source_no_eval"),
 ]
 
 for case in CASES:
