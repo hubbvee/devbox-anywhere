@@ -7,7 +7,9 @@ close the laptop.**
 This isn't a theoretical tutorial: it's the exact setup we run daily, extracted into a
 repo. Browser IDE + tmux on a VPS, one named session per project, one-tap attach from
 an iPhone via Termius, secrets from 1Password/Bitwarden, drag-and-drop file transfer,
-and an orchestrator pattern ("Hermes") where one agent supervises every session.
+an orchestrator pattern ("Hermes") where one agent supervises every session, and a
+read-only status door for a hosted bot that helps run the work while you keep the final
+say.
 
 ```text
                         ┌────────────────────────── YOUR VPS (OVH / Hetzner / any) ─┐
@@ -41,6 +43,15 @@ and an orchestrator pattern ("Hermes") where one agent supervises every session.
   phone; everything lands in `~/project/_inbox/`.
 - **Hermes** — a tiny tmux wrapper that lets one agent list, read, and type into every
   other session. Orchestration with zero infrastructure.
+- **Several agents per project, at a glance** — each agent gets its own worktree, branch,
+  and tmux window; `devbox-session status <project>` shows what every one of them has done,
+  which one may currently write to each worktree (holds the turn), and which are safe to
+  clean up.
+- **A bot as your project manager, on a short leash** — run a second, isolated devbox for
+  the bot (`install-devbox --instance NAME --web-port N --ssh-port N`) with dev-only
+  credentials and give the bot a read-only status key. Anything it changes goes through a
+  small bridge you write yourself, and you keep merges, releases, production, and secrets
+  ([docs/14](docs/14-let-a-bot-manage-your-devbox.md)).
 
 ## Quick start
 
@@ -52,6 +63,40 @@ it to follow [`AGENTS.md`](AGENTS.md) and the
 shows a dry-run, keeps services loopback-only by default, asks before privileged/public
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
+
+### Follow the full guide yourself
+
+1. **[Get a VPS](docs/01-get-a-vps.md)** — Ubuntu LTS, ~$5+/mo, 10 min of hardening.
+2. **[Install Coolify](docs/02-install-coolify.md)** — one command; gives you HTTPS +
+   deploy UI. (Plain-Docker alternative included.)
+3. **[Deploy the devbox](docs/03-deploy-the-devbox.md)** — the container from
+   [`stack/`](stack/): code-server + tmux + sshd, with bulletproof bind-mount
+   persistence.
+4. **[Learn the session vocabulary](docs/04-tmux-sessions.md)** — one session per
+   project, multiple agents in parallel.
+5. **[Connect every device](docs/05-connect-from-any-device.md)** — browser, terminal,
+   VS Code/Claude desktop over SSH, and the Termius one-tap phone setup.
+6. **[Wire up secrets](docs/06-secrets-management.md)** — 1Password or Bitwarden CLI.
+7. **[Send files in](docs/07-getting-files-in.md)** — DevboxDrop, `2dev`, `devshot`.
+8. **[Run the Hermes pattern](docs/08-hermes-agent.md)** — one agent to drive them all.
+9. **[Backups & rebuilds](docs/09-backups-rebuilds-hardening.md)** — nightly cron,
+   hands-off rebuilds, hardening checklist.
+10. **[Manage projects from Telegram topics](docs/10-telegram-project-topics.md)** —
+    one private forum group, one isolated topic and tmux session per project.
+11. **[Switch coding agents mid-session](docs/11-switch-coding-agents-mid-session.md)** —
+    safely hand a live worktree between Claude Code, Codex, or another CLI.
+12. **[Browsers & authenticating to services](docs/12-browser-and-auth.md)** — headless
+    testing browser, token-first auth (incl. Cloudflare), SSH-forwarded OAuth callbacks,
+    and the opt-in server GUI browser.
+13. **[Multi-channel sessions with multiple agents](docs/13-multi-channel-multi-agent.md)** —
+    one project = one tmux session reachable from any channel; multiple agents in parallel,
+    each with its own worktree + branch and a per-worktree one-writer turn-lock.
+14. **[Let a bot manage your devbox](docs/14-let-a-bot-manage-your-devbox.md)** — a
+    separate instance with dev-only credentials, a read-only status gate, your own bridge
+    for writes, and human gates on everything that matters.
+
+Each release below lists what changed; full notes, including upgrade steps, are on the
+[releases page](https://github.com/hubbvee/devbox-anywhere/releases).
 
 ## New in v1.8.0: a separate devbox for your bot, with a read-only door
 
@@ -211,37 +256,6 @@ tag and exact commit first, copy the skill from that checkout, and start a new H
 session so its skill index refreshes. Installation and deployment always require a stable
 installer-bearing release.
 
-### Follow the full guide yourself
-
-1. **[Get a VPS](docs/01-get-a-vps.md)** — Ubuntu LTS, ~$5+/mo, 10 min of hardening.
-2. **[Install Coolify](docs/02-install-coolify.md)** — one command; gives you HTTPS +
-   deploy UI. (Plain-Docker alternative included.)
-3. **[Deploy the devbox](docs/03-deploy-the-devbox.md)** — the container from
-   [`stack/`](stack/): code-server + tmux + sshd, with bulletproof bind-mount
-   persistence.
-4. **[Learn the session vocabulary](docs/04-tmux-sessions.md)** — one session per
-   project, multiple agents in parallel.
-5. **[Connect every device](docs/05-connect-from-any-device.md)** — browser, terminal,
-   VS Code/Claude desktop over SSH, and the Termius one-tap phone setup.
-6. **[Wire up secrets](docs/06-secrets-management.md)** — 1Password or Bitwarden CLI.
-7. **[Send files in](docs/07-getting-files-in.md)** — DevboxDrop, `2dev`, `devshot`.
-8. **[Run the Hermes pattern](docs/08-hermes-agent.md)** — one agent to drive them all.
-9. **[Backups & rebuilds](docs/09-backups-rebuilds-hardening.md)** — nightly cron,
-   hands-off rebuilds, hardening checklist.
-10. **[Manage projects from Telegram topics](docs/10-telegram-project-topics.md)** —
-    one private forum group, one isolated topic and tmux session per project.
-11. **[Switch coding agents mid-session](docs/11-switch-coding-agents-mid-session.md)** —
-    safely hand a live worktree between Claude Code, Codex, or another CLI.
-12. **[Browsers & authenticating to services](docs/12-browser-and-auth.md)** — headless
-    testing browser, token-first auth (incl. Cloudflare), SSH-forwarded OAuth callbacks,
-    and the opt-in server GUI browser.
-13. **[Multi-channel sessions with multiple agents](docs/13-multi-channel-multi-agent.md)** —
-    one project = one tmux session reachable from any channel; multiple agents in parallel,
-    each with its own worktree + branch and a per-worktree one-writer turn-lock.
-14. **[Let a bot manage your devbox](docs/14-let-a-bot-manage-your-devbox.md)** — a
-    separate instance with dev-only credentials, a read-only status gate, your own bridge
-    for writes, and human gates on everything that matters.
-
 ## Repo layout
 
 | Path | What |
@@ -252,7 +266,7 @@ installer-bearing release.
 | `skills/devbox-anywhere/` | Hermes umbrella skill plus eight operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |
-| `tests/` | Installer, harness, skill, source-trust, lifecycle, and mutation checks |
+| `tests/` | Installer, named-instance, harness, skill, source-trust, lifecycle, session/status, status-gate, and mutation checks |
 
 Run the repository checks with:
 
@@ -279,6 +293,14 @@ pricing, and your agents keep working while you're gone.
 **Does it need Coolify?** No — [`stack/docker-compose.yml`](stack/docker-compose.yml)
 runs it with plain Docker + any reverse proxy. Coolify just makes HTTPS and redeploys
 one-click, and you'll want it for everything else you self-host.
+
+**Can a hosted AI bot drive it?** Yes, with limits you set. Give the bot its own instance
+with dev-only credentials and a key that can only read status
+([docs/14](docs/14-let-a-bot-manage-your-devbox.md)). Anything that changes state (starting
+an agent, giving it a task) goes through a small bridge you write and run yourself; it is
+not included in this repo. Agent branches reach your Git host only through a push step you
+control, which opens pull requests, and the guide keeps merges, releases, production, and
+secrets with you. No particular bot is required.
 
 **Android instead of iPhone?** Termius works the same; any SSH client with key auth
 does (the picker is server-side).
