@@ -147,9 +147,9 @@ The bot reaches the devbox through two doors, and only two:
    `authorized_keys` line forces every connection through `devbox-status-gate`. It
    answers exactly four requests — `version`, `list`, `status <project>`, and
    `status <project> --json` — and denies everything else. Start here: a read-only bot
-   is already useful, and it is the lowest-risk way to learn how the bot behaves. The
-   gate restricts what the bot's key can ask; it does not protect the instance from its
-   own agents.
+   is already useful, and it is the lowest-risk way to learn how the bot behaves. Read
+   [what the gate does and does not protect](#what-the-status-gate-protects-and-what-it-does-not)
+   before you rely on it.
 2. **Write: your bridge.** Anything that changes state (start an agent, give it a task,
    stop it) goes through a small service that **you** write and own. It is out of scope
    for this repository, because its rules are your rules. Whatever language you write it
@@ -184,6 +184,41 @@ The bot reaches the devbox through two doors, and only two:
          timeout means deny.
    - [ ] **Least privilege itself.** Runs as its own unprivileged account — not root,
          and not in the `docker` group (membership in that group is root-equivalent).
+
+### What the status gate protects, and what it does not
+
+The gate protects **the instance from the bot**: a stolen or hijacked bot key can read
+status and nothing else — no shell, no file reads, no port forwarding, no writes — for as
+long as the gate and its `authorized_keys` line are the ones you installed.
+
+It does **not** protect **the bot, or you, from a compromised instance**:
+
+- The agents run as `coder`, who has passwordless `sudo` inside the container. The gate
+  script, the `authorized_keys` line, and the gate's log are ordinary files in that
+  account's home, so a hijacked agent can rewrite any of them: widen the gate, add keys,
+  or erase its tracks.
+- Everything the gate returns is produced inside the instance — project and agent names,
+  branch names, worktree paths, turn holders, activity, `(reapable)`. A hijacked agent can
+  make that output say whatever it wants, including text written to steer the bot.
+  Treat every field as untrusted data, never as instructions or as proof that work is
+  finished, merged, or safe to delete.
+
+The real isolation boundary is the **separate instance plus dev-only credentials**: assume
+everything inside the bot's instance can be hostile, and make sure nothing it holds can hurt
+you. The gate only keeps the bot's key from being more than a status reader.
+
+The gate also has deliberate limits, because it runs `devbox-session` with a clean
+environment (`env -i` with only `HOME`, a fixed `PATH`, and `LC_ALL=C`):
+
+- It always reads the default sessions registry under the instance's home
+  (`~/.local/state/devbox/sessions`); `DEVBOX_SESSION_HOME` is ignored.
+- `DEVBOX_STATUS_BASE` is ignored, so a project whose repository has neither `main` nor
+  `master` fails with `cannot resolve base branch`. The JSON `base` field always reads
+  `auto`.
+- `TMUX_TMPDIR` and `DEVBOX_TURN_STATE` are ignored. If your agents' tmux runs on a
+  non-default socket, or turn locks live elsewhere, the gate shows activity `unknown` and
+  turn `free` — so a merged, clean agent that is in fact live can read `(reapable)` through
+  the gate. In such a setup, never reap on the gate's word.
 
 ### Human gates
 
@@ -314,6 +349,9 @@ gate itself, generate it on the bot's machine instead:
 ssh-keygen -t ed25519 -f ~/.ssh/my-bot-readonly -C my-bot-readonly
 ```
 
+Leave the key without a passphrase only if the machine that holds it is dedicated to the
+bridge or the bot; otherwise protect it as you would any service credential.
+
 One key per bot, used for nothing else. Never reuse your personal key. The private key
 never leaves the machine that made it — do not copy it to the server to run the tests;
 only the `.pub` file travels.
@@ -361,42 +399,68 @@ bot's machine, run the same commands there over the path you chose
 in place of `127.0.0.1` and `2322`:
 
 ```bash
-K=~/.ssh/my-bot-readonly
-ssh -p 2322 -i "$K" coder@127.0.0.1 version
-ssh -p 2322 -i "$K" coder@127.0.0.1 list
-ssh -p 2322 -i "$K" coder@127.0.0.1 'status myproject'
-ssh -p 2322 -i "$K" coder@127.0.0.1 'status myproject --json'
+# Offer ONLY the bot's key. Without IdentitiesOnly, ssh may try your own admin key first
+# (from ssh-agent or ~/.ssh), get a full shell, and make every test below meaningless.
+gate() {
+  ssh -p 2322 -o IdentitiesOnly=yes -o ForwardAgent=no -o ClearAllForwardings=yes \
+    -i ~/.ssh/my-bot-readonly coder@127.0.0.1 "$@"
+}
+gate version
+gate list
+gate 'status myproject'
+gate 'status myproject --json'
 ```
+
+`version` prints `devbox-status-gate 1.8.0`. Configure the bot or bridge the same way:
+this key only, no agent forwarding.
 
 `status --json` is the same schema-versioned document as `devbox-session status --json`
 ([docs/13](13-multi-channel-multi-agent.md#agent-status-board)): agent labels, git state,
-branch names, worktree paths, turn holders, and an activity label. It never contains
-terminal contents.
+branch names, worktree paths, turn holders, and an activity label (`base` always reads
+`auto` through the gate). It never contains terminal contents. An unknown project prints
+`ERROR: unknown project: <name>`, so the key can tell which project names exist.
 
 Now prove the door is narrow. Each of these must print `devbox-status-gate: denied` and
 exit with status `126`:
 
 ```bash
-ssh -p 2322 -i "$K" coder@127.0.0.1;                                 echo "exit=$?"
-ssh -p 2322 -i "$K" coder@127.0.0.1 'cat ~/.ssh/authorized_keys';    echo "exit=$?"
-ssh -p 2322 -i "$K" coder@127.0.0.1 'status myproject; id';          echo "exit=$?"
-ssh -p 2322 -i "$K" coder@127.0.0.1 'status ../../etc';              echo "exit=$?"
-ssh -p 2322 -i "$K" coder@127.0.0.1 'list --all';                    echo "exit=$?"
+gate;                                   echo "exit=$?"
+gate 'cat ~/.ssh/authorized_keys';      echo "exit=$?"
+gate 'status myproject; id';            echo "exit=$?"
+gate 'status ../../etc';                echo "exit=$?"
+gate 'list --all';                      echo "exit=$?"
 ```
 
-File copies (`scp`, `sftp`) with this key must fail too. Then confirm the denials were
-recorded. The log lives in the instance at `~/.local/state/devbox/status-gate.log`
-(owner-only, kept to a bounded size). Read it as `coder` inside the instance, not as host
-root through `/data/devbox-bot/...`, and pass it through `cat -v` so control characters
-cannot reach your terminal:
+(The first one may also print `PTY allocation request failed`: `restrict` refuses a
+terminal before the gate denies the empty request.) File copies (`scp`, `sftp`) with this
+key must fail too.
+
+Then confirm the requests were recorded. The gate appends one tab-separated line per
+request — time, `allow` or `deny`, the request (non-printable bytes shown as `?`, cut to
+200 characters), the client address, and a short reason — to
+`~/.local/state/devbox/gate/status-gate.log` in the instance (under `$XDG_STATE_HOME`
+instead, if the instance's shell startup files set it). Read it as `coder` inside the
+instance, not as host root through `/data/devbox-bot/...`, and pass it through `cat -v` so
+control characters cannot reach your terminal:
 
 ```bash
 sudo docker --context default exec --user coder devbox-bot \
-  tail -n 20 /home/coder/.local/state/devbox/status-gate.log | cat -v
+  tail -n 20 /home/coder/.local/state/devbox/gate/status-gate.log | cat -v
 ```
 
-This log is a convenience for testing, not your audit trail: anything in the instance
-can rewrite it. Keep the authoritative log in your bridge, outside the instance.
+How the log behaves:
+
+- The `gate/` directory is created `0700` and the log `0600`. The gate refuses to write
+  through a symlink, or into a `gate/` directory that is not yours or is group- or
+  world-writable. If you loosen
+  `gate/` (for example, make it group-writable), **every allowed request is denied**
+  (logging fails closed) until you `chmod 700` it again.
+- Past 256 KiB the log is rotated to `status-gate.log.1`, keeping one old generation. A
+  flood of denied requests — a few thousand long ones — can therefore push every older
+  line out. Do not count on sshd's own log as a backstop either: the image runs no syslog
+  daemon, so the container's sshd has nowhere to keep one.
+- It is a convenience for testing, not your audit trail: anything in the instance can
+  rewrite it. Keep the authoritative log in your bridge, outside the instance.
 
 Only when every allowed request works and every denied one is refused, hand the key to
 the bot.
@@ -413,9 +477,10 @@ path to it by default. In order of preference:
    `authorized_keys` line allows nothing but a tunnel to that one port, for example
    `restrict,port-forwarding,permitopen="127.0.0.1:2322",command="/usr/sbin/nologin" ssh-ed25519 AAAA... my-bot-tunnel`,
    used with `ssh -N -L 2322:127.0.0.1:2322 BOT_TUNNEL_USER@SERVER_ADDRESS`.
-3. **Deliberate exposure.** Publish the instance's SSH port with `--expose-ssh` (check
-   `install-devbox --help` for how it combines with `--instance`) and allow only the
-   bot's source address in your **provider's** firewall. Docker-published ports can
+3. **Deliberate exposure.** Re-run the installer with the instance's same flags plus
+   `--expose-ssh`, which publishes that instance's `--ssh-port` on every interface
+   (`0.0.0.0`; its web port stays on loopback), and allow only the bot's source address
+   in your **provider's** firewall. Docker-published ports can
    bypass host firewall front ends such as ufw, so do not rely on ufw alone. Treat this
    as a privileged network change that needs its own explicit approval.
 

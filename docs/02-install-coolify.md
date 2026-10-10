@@ -42,6 +42,8 @@ The whole stack also runs with plain Docker — see [`stack/docker-compose.yml`]
 You'll need to bring your own HTTPS reverse proxy (Caddy is the least-effort option:
 two lines of Caddyfile gets you auto-TLS). Everything else in this guide still applies;
 where we reference the Coolify container label
-(`coolify.resourceName=devbox`), substitute `-f name=devbox`.
+(`coolify.resourceName=devbox`), substitute the anchored filter `-f name=^devbox$` (a bare
+`name=devbox` is a substring match that also catches `devbox-browser` and any named
+instance; for an `install-devbox --instance NAME` box use `-f name=^devbox-NAME$`).
 
 Next: [03 — Deploy the devbox](03-deploy-the-devbox.md)

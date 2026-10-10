@@ -56,21 +56,30 @@ use a blind `curl | sudo bash` path or print generated credentials.
 ## New in v1.8.0: a separate devbox for your bot, with a read-only door
 
 - **Run a second, isolated devbox** — `install-devbox --instance NAME --web-port N
-  --ssh-port N` creates container `devbox-NAME` with its own data root
+  --ssh-port N` (plus `--browser-port N` with `--with-browser`) creates container
+  `devbox-NAME` in Compose project `devbox-NAME`, with its own data root
   (`/data/devbox-NAME`), logins, keys, and sessions. Ports are loopback-only by default,
-  validated, and refused if already in use. Without `--instance` nothing changes. See
+  validated, and refused if already in use; the installer never adopts a container it did
+  not create. The harness takes the same flags: `plan --instance NAME --web-port N
+  --ssh-port N`, and `preflight`/`verify`/`diagnose --instance NAME`. Without
+  `--instance` nothing changes. See
   [docs/03](docs/03-deploy-the-devbox.md#running-a-second-instance).
 - **A read-only door for bots** — `devbox-status-gate` is installed with the other
-  helpers but does nothing until a key uses it. One `restrict,command=...` line in
-  `authorized_keys` lets that key ask only for `version`, `list`, or
-  `status <project> [--json]`; everything else is denied (exit 126) and logged. Revoke =
-  delete the line. It limits the bot's key, not the instance's own agents.
+  helpers (and checked by `verify`) but does nothing until a key uses it. One
+  `restrict,command=...` line in `authorized_keys` lets that key ask only for `version`,
+  `list`, or `status <project> [--json]`; everything else is denied (exit 126) and logged
+  inside the instance. Revoke = delete the line. It limits what the bot's key can do to
+  the instance; it does not protect the bot or you from a compromised instance. See
+  [docs/14](docs/14-let-a-bot-manage-your-devbox.md).
 - **Let a bot manage coding work while you keep control** —
   [docs/14](docs/14-let-a-bot-manage-your-devbox.md): a separate instance with dev-only
   credentials, your own bridge for writes, human gates, independent verification, a
   staged autonomy ladder, and a threat model.
-- **Fixed:** the status board now reports `unknown` — not the main shell's state — for an
-  agent whose tmux window does not exist or whose window name is duplicated.
+- **Fixed:** the status board now proves an agent's tmux window exists before reading it.
+  An agent with no window reads `unknown` instead of borrowing the session's main shell
+  state; a window it cannot prove (a duplicated window name, or tmux output it cannot
+  parse, such as a newline inside a window name) also reads `unknown` and is never
+  `(reapable)`.
 
 ## New in v1.7.0: agent status board
 
@@ -80,8 +89,11 @@ use a blind `curl | sudo bash` path or print generated credentials.
   activity **heuristic** (`working | idle | blocked | unknown`). Add `--json` for a
   schema-versioned document that scripts and agents can read.
 - **Safe cleanup** — an agent is marked `(reapable)` only when it is merged, clean, the turn
-  is free, and nothing is running in its window. A just-created agent reads `new`, never
-  `merged`. Unknown or missing state fails closed: no guessing, never reapable.
+  is free, and its window is not `working`. A just-created agent reads `new`, never
+  `merged`. Activity is never guessed: it reads `unknown` when it cannot be read. An agent
+  with no tmux session or no window of its own reads `unknown` and can still be reapable,
+  because nothing can be running there. A missing worktree, an unknown fork point, or a
+  window that may exist but cannot be proven (since v1.8.0) is never reapable.
 - **No migration** — existing registries keep working. See
   [docs/13](docs/13-multi-channel-multi-agent.md).
 

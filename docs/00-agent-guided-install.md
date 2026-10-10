@@ -26,7 +26,8 @@ secret into chat.
 4. generates a random code-server password without printing it;
 5. stores deployment settings in an owner-only file;
 6. builds and starts the pinned Compose stack;
-7. installs the persisted `devbox` and `devbox-relink` helpers; and
+7. installs the persisted helpers (`devbox`, `devbox-relink`, the session tools, and the
+   inert read-only `devbox-status-gate`); and
 8. verifies the running container before reporting success.
 
 It is resumable: running it again preserves the generated browser password and persistent

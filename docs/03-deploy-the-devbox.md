@@ -108,7 +108,7 @@ What changes for an instance named `NAME`:
 | --- | --- | --- |
 | Data root | `/data/devbox` | `/data/devbox-NAME` |
 | Container | `devbox` | `devbox-NAME` |
-| Compose project | Compose's default | `devbox-NAME` |
+| Compose project | `stack` (named after the `stack/` directory) | `devbox-NAME` |
 | Ports | `8080` / `2222` (`8081` browser) | the ports you pass, loopback-only by default |
 
 - `NAME` is a letter followed by up to 14 lowercase letters or digits; a few reserved
@@ -124,10 +124,17 @@ What changes for an instance named `NAME`:
 - **Without `--instance` nothing changes:** the default install, its paths, and its ports
   are exactly as before. Upgrade an instance by re-running the installer with the same
   flags.
-- Backups: `scripts/backup-devbox.sh` takes no arguments (not even `--help`; running it
-  starts a backup) and targets one container. Read the comments at the top of the script
-  before pointing a copy of it at an instance, or take the stopped-instance `tar` backup
-  shown below ([docs/09](09-backups-rebuilds-hardening.md)).
+- Always pass `-p devbox-NAME` when you run `docker compose` against an instance yourself,
+  as every command on this page does. The installer passes it, and also writes
+  `COMPOSE_PROJECT_NAME=devbox-NAME` into the instance's `compose.env` as a backstop for a
+  hand-typed `--env-file` command that forgets it. The default install's `compose.env`
+  deliberately carries no project name, so its project stays `stack`.
+- Backups: `scripts/backup-devbox.sh` takes no arguments — not even `--help` or
+  `--instance`; it ignores them and starts a real backup — and finds one container by its
+  filter. For an instance, install a **copy** whose filter is `-f name=^devbox-NAME$` (the
+  comments at the top of the script show where) and run it with its own `BACKUP_DIR`;
+  sharing a directory would let one copy's retention delete the other's archives. Or take
+  the stopped-instance `tar` backup shown below ([docs/09](09-backups-rebuilds-hardening.md)).
 
 **Removing an instance.** Stop and remove its containers by Compose project name (run it
 from a directory without a compose file, so only the project name is used):
@@ -146,6 +153,25 @@ sudo rm -rf /data/devbox-NAME     # irreversible; double-check the name first
 ```
 
 Never aim these at your default instance (`/data/devbox`, container `devbox`).
+
+**Troubleshooting an instance re-run.** The installer refuses to touch containers it did
+not create, and fails closed instead:
+
+- `container devbox-NAME exists but is not managed by Compose project devbox-NAME` — a
+  container with that name was made by hand or by another project. Rename or remove it
+  yourself after checking what it is; the installer will not adopt it.
+- `container ... already belongs to Compose project devbox-NAME; refusing to recreate it` —
+  usually a leftover one-off container, for example from
+  `docker compose -p devbox-NAME run ...`. List the project's containers, remove only that
+  one-off by its exact name, and re-run the installer:
+
+  ```bash
+  sudo docker --context default ps -a --filter label=com.docker.compose.project=devbox-NAME
+  sudo docker --context default rm EXACT_ONE_OFF_NAME
+  ```
+
+- `host port N is already in use` — something else listens on a port you chose. Pick
+  another port; ports the instance itself recorded on an earlier run are not counted.
 
 ## Two ways to add tools later (and make them stick)
 

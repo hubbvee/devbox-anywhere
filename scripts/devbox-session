@@ -6,7 +6,7 @@
 # read-only resolver over a registry directory maintained by devbox-worktree; it needs no
 # live tmux and never invents a session, agent, or worktree.
 #
-# Registry: $DEVBOX_SESSION_HOME/<project>.tsv (default /data/devbox/sessions), one row
+# Registry: $DEVBOX_SESSION_HOME/<project>.tsv (default ~/.local/state/devbox/sessions), one row
 # per agent: <agent-id>\t<worktree-path>\t<branch>[\t<fork-sha>]. The optional 4th column is
 # the base tip at creation, recorded by devbox-worktree so status can tell a fresh branch
 # (no commits yet) from a genuinely merged one. Agent ids must be "<project>-<suffix>".
@@ -18,7 +18,8 @@
 #   devbox-session status <project> [--json]  per-agent git/turn facts + activity heuristic
 #
 # status state column: new|new+dirty|clean|dirty|merged|merged+dirty, plus (reapable) when
-# merged && clean && turn free && not working. Activity (working|idle|blocked|unknown) is a
+# merged && clean && turn free && not working, and never while a window with the agent's name
+# may exist but cannot be read reliably. Activity (working|idle|blocked|unknown) is a
 # HEURISTIC: "working" = any non-shell foreground process, so an agent CLI idle at its own
 # prompt reads "working" (it means "a CLI is open here", not "actively producing output").
 set -eu

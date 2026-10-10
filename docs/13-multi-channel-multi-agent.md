@@ -126,9 +126,10 @@ Two kinds of signal, deliberately distinguished:
   `devbox-turn` holder. These are computed from git and the lock; trust them. The state
   column shows every fact that applies, so dirt is never hidden: a fresh branch with
   uncommitted changes reads `new+dirty` and a merged one reads `merged+dirty`. `(reapable)`
-  = `merged && clean && turn free && activity != working` — safe to remove. A `new` branch
-  is **never** `merged` or `reapable`, so a just-created (possibly live) agent is never
-  flagged for cleanup.
+  = `merged && clean && turn free && activity != working`, and **never** while a window
+  bearing the agent's name may exist but cannot be proven (see activity below). A `new`
+  branch is **never** `merged` or `reapable`, so a just-created (possibly live) agent is
+  never flagged for cleanup. A worktree missing from disk is never `reapable` either.
 
   How `new` is detected: for a worktree created by this version, `devbox-worktree` records
   the fork point (the base tip at creation) as a 4th registry column, and `new` means
@@ -142,10 +143,20 @@ Two kinds of signal, deliberately distinguished:
 - **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the tmux pane
   (`working` = a non-shell foreground command; `idle` = a shell prompt; `blocked` = a known
   waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). When the
-  pane can't be read it is `unknown` — never guessed. That includes an agent whose tmux window
-  does not exist, or whose window name appears more than once in the session: it reads
-  `unknown` rather than borrowing the state of the session's main shell. `--json` marks this with
-  `"activity_confidence":"heuristic"`. Do not gate irreversible actions on activity alone.
+  pane can't be read it is `unknown` — never guessed. The board first proves the agent's
+  window exists — exactly one window in the project's session whose name is exactly the
+  agent id — and reads only that window, so it never borrows the state of the session's main
+  shell. Two kinds of `unknown` follow, and they differ for cleanup:
+  - **Provably nothing there** — no tmux session for the project, or no window with the
+    agent's name. Activity is `unknown`, but nothing can be running there, so the agent can
+    still be `(reapable)` when it is merged, clean, and the turn is free.
+  - **A window that may exist but cannot be proven** — the agent's name appears on more than
+    one window, tmux's listing is inconsistent (for example, a raw newline inside a window
+    name or a pane command forges extra rows), or the window vanishes mid-read. Activity is
+    `unknown` and the agent is **never** `(reapable)`.
+
+  `--json` marks activity with `"activity_confidence":"heuristic"`. Do not gate
+  irreversible actions on activity alone.
   **Known limit:** `working` means *any* non-shell foreground process, so an agent CLI
   (claude/codex) sitting idle at its own prompt still reads `working` — its process is always
   in the foreground. For the board's main use case that is usually what you want (`working`
@@ -159,8 +170,13 @@ from disk is reported `"missing": true`, never a crash.
 
 **Reap workflow:** an agent shown `(reapable)` is merged, clean, unheld, and not actively
 running — tear it down with `devbox-worktree remove <project> <agent>` (still refuses a dirty
-tree without `--force`). An actively-`working` agent is never `(reapable)`, so following this
-workflow cannot delete a live agent's worktree.
+tree without `--force`). An agent whose window reads `working` is never `(reapable)`. The
+board only sees the tmux server its own environment points at, though: if tmux is not
+installed, if the agents run on a server it does not reach (a `-L` socket, or a
+`TMUX_TMPDIR` the caller does not share — the read-only status gate of
+[docs/14](14-let-a-bot-manage-your-devbox.md) never shares it), or if an agent runs outside
+its named window, activity is `unknown` and a live agent can read `(reapable)`. In those
+setups, look before you reap.
 
 ## Dependency policy
 

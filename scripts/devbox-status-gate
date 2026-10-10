@@ -79,8 +79,8 @@
 # you chmod 700 it). A deny is always a deny, logged or not.
 # Limit: the log is a convenience record kept inside the same account, not tamper-proof
 # evidence. With one rotated generation, roughly 2,000 long denied requests from the key push
-# every older line out; sshd's own log (wherever your sshd sends it) still records each
-# connection.
+# every older line out. sshd's own log records each connection only where something collects
+# it (the stock devbox image runs no syslog daemon).
 set -eu
 
 GATE_VERSION=1.8.0

@@ -36,8 +36,7 @@ sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json
 - container running;
 - actual Docker port bindings exactly matching the root-owned installer state;
 - exactly five writable Docker bind mounts matching the fixed `/data/devbox` paths;
-- `devbox` helper executable;
-- `devbox-relink` helper executable;
+- every shipped helper executable: `devbox`, `devbox-daemon`, `devbox-relink`, `devbox-session`, `devbox-turn`, `devbox-worktree`, and `devbox-status-gate` (inert until an `authorized_keys` line uses it);
 - code-server responding inside the container;
 - SSH responding inside the container.
 
