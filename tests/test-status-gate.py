@@ -9,9 +9,14 @@ gate with an exact argv, a fixed PATH and a scrubbed environment. Everything els
 request is audit-logged 0600 with a sanitized request; the log rotates past 256 KiB; an allow
 whose log line cannot be written is denied (fail closed). The gate is copied into a temp dir
 next to a STUB devbox-session that records its argv/env/stdin.
+
+Not covered here: the "owned by you or root" half of the trust checks (helper, devbox-turn,
+helper dir, log dir, log file) needs a file owned by ANOTHER non-root user, which an
+unprivileged test cannot create. Only the symlink/mode/type halves are exercised.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import pathlib
@@ -46,6 +51,7 @@ exit 0
 """
 
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="devbox-status-gate-")).resolve()
+atexit.register(shutil.rmtree, tmp, ignore_errors=True)  # also when an assertion fails
 os.chmod(tmp, 0o700)
 bindir = tmp / "bin"
 home = tmp / "home"
@@ -60,7 +66,7 @@ stub = bindir / "devbox-session"
 stub.write_text(STUB)
 os.chmod(stub, 0o755)
 record = bindir / "record"
-log = home / ".local/state/devbox/status-gate.log"
+log = home / ".local/state/devbox/gate/status-gate.log"
 empty_bash_env = tmp / "bash-env"
 empty_bash_env.write_text("")
 
@@ -87,15 +93,30 @@ POISON = {
 ALLOWED_CHILD_KEYS = {"HOME", "PATH", "LC_ALL", "PWD", "OLDPWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"}
 
 
-def run_gate(request: str | None, *, path: pathlib.Path | None = None, extra: dict[str, str] | None = None,
-             args: tuple[str, ...] = (), stdin: bytes = b"STDIN_FROM_CLIENT") -> subprocess.CompletedProcess[bytes]:
+def gate_env(request: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ) | POISON | {"HOME": str(home), "SSH_CLIENT": CLIENT}
     env.pop("XDG_STATE_HOME", None)
     env.pop("SSH_ORIGINAL_COMMAND", None)
     if request is not None:
         env["SSH_ORIGINAL_COMMAND"] = request
     env |= extra or {}
+    return env
+
+
+def run_gate(request: str | None, *, path: pathlib.Path | None = None, extra: dict[str, str] | None = None,
+             args: tuple[str, ...] = (), stdin: bytes = b"STDIN_FROM_CLIENT") -> subprocess.CompletedProcess[bytes]:
+    env = gate_env(request, extra)
     return subprocess.run([str(path or gate), *args], env=env, cwd=work, input=stdin, capture_output=True, timeout=60)
+
+
+def utf8_locale() -> str | None:
+    """A locale in which bash counts characters, not bytes (None if this host has none)."""
+    for loc in ("C.UTF-8", "en_US.UTF-8"):
+        r = subprocess.run(["bash", "-c", 'x=$(printf "\\303\\251"); printf %s "${#x}"'],
+                           env=dict(os.environ, LC_ALL=loc), capture_output=True, text=True)
+        if r.stdout == "1":
+            return loc
+    return None
 
 
 def read_record(where: pathlib.Path = record) -> dict[str, object] | None:
@@ -175,6 +196,22 @@ r = run_gate("list")
 assert r.returncode == 7, f"gate_exec_status_passthrough:{r.returncode}"
 stub.write_text(STUB)
 
+# The gate works in BYTES whatever the caller's locale: a multibyte request is denied and
+# logged as at most 200 '?' (one per byte), never as 200 characters. Logged elsewhere so the
+# line accounting of section 4 is untouched.
+UTF8 = utf8_locale()
+if UTF8:
+    xdg_loc = tmp / "xdg-locale"
+    wide = "status " + "\u00e9" * 150
+    clear_record()
+    r = run_gate(wide, extra={"LC_ALL": UTF8, "LANG": UTF8, "XDG_STATE_HOME": str(xdg_loc)})
+    assert r.returncode == 126 and read_record() is None, f"gate_byte_locale:not-denied:{r!r}"
+    shown = log_lines(xdg_loc / "devbox/gate/status-gate.log")[-1][2]
+    assert len(shown) == 200, f"gate_byte_locale:{len(shown)}"
+    assert shown == sanitized(wide), f"gate_log_sanitized:wide:{shown!r}"
+else:
+    print("status_gate_utf8_locale=SKIP (no UTF-8 locale for bash on this host)")
+
 # --- 2. Interactive / empty / argument-only invocations are denied. ------------------------
 expect_denied(None, "unset")
 assert last_reason() == "empty", "gate_deny_reason:unset"
@@ -236,19 +273,40 @@ for request, reason in REASONS:
 
 # Hostile SSH_CLIENT is sanitized too (first field, hex/.: only, no line breaks).
 expect_denied("bad;", "client", extra={"SSH_CLIENT": "1.2.3.4\nZZ\tqq;$(x) 1 2"})
+assert len(log_lines()[-1]) == 5, f"gate_log_client_sanitized:fields:{log_lines()[-1]}"
 assert log_lines()[-1][3] == "1.2.3.4" + "?" * 11, f"gate_log_client_sanitized:{log_lines()[-1]}"
 expect_denied("bad;", "no-client", extra={"SSH_CLIENT": ""})
 assert log_lines()[-1][3] == "-", f"gate_log_client_absent:{log_lines()[-1]}"
 
-# An existing state dir may be group-writable (user-private-group umask) but never world-writable.
-os.chmod(log.parent, 0o770)
+# devbox/ is shared with the session registry and is often group-writable (umask 002): fine,
+# because the log lives in the gate's own gate/ dir below it.
+os.chmod(log.parent.parent, 0o775)
 clear_record()
-assert run_gate("list").returncode == 0 and read_record() is not None, "gate_log_dir_group_ok"
-os.chmod(log.parent, 0o777)
+assert run_gate("list").returncode == 0 and read_record() is not None, "gate_log_shared_parent_ok"
+os.chmod(log.parent.parent, 0o700)
+# gate/ itself must be yours alone: group- or world-writable fails closed, nothing written.
+for mode, label in ((0o770, "group-writable-log-dir"), (0o777, "world-writable-log-dir")):
+    os.chmod(log.parent, mode)
+    before = log.read_bytes()
+    clear_record()
+    r = run_gate("list")
+    os.chmod(log.parent, 0o700)
+    assert r.returncode == 126 and r.stderr == DENIED and read_record() is None, f"gate_allow_fail_closed:{label}"
+    assert log.read_bytes() == before, f"gate_allow_fail_closed:{label}:written"
+
+# A symlinked gate/ dir is never followed, even to a dir you own that is also named gate.
+elsewhere = tmp / "elsewhere/gate"
+elsewhere.mkdir(parents=True)
+os.chmod(elsewhere, 0o700)
+real_gate_dir = log.parent.with_name("gate.real")
+log.parent.rename(real_gate_dir)
+log.parent.symlink_to(elsewhere)
 clear_record()
 r = run_gate("list")
-os.chmod(log.parent, 0o700)
-assert r.returncode == 126 and read_record() is None, "gate_allow_fail_closed:world-writable-log-dir"
+written = list(elsewhere.iterdir())
+log.parent.unlink()
+real_gate_dir.rename(log.parent)
+assert r.returncode == 126 and read_record() is None and not written, f"gate_log_dir_symlink_refused:{written}"
 
 # A pre-existing looser log is tightened back to 0600.
 os.chmod(log, 0o644)
@@ -266,11 +324,52 @@ assert rotated.exists() and rotated.read_bytes() == big, "gate_log_rotated"
 assert len(log_lines()) == 1 and log_lines()[0][1] == "allow", "gate_log_rotated:fresh"
 assert stat.S_IMODE(rotated.stat().st_mode) == 0o600, "gate_log_rotated:mode"
 
+# Rotation never moves the log INTO a directory sitting at .1 (directly or through a symlink).
+lock = log.with_name("status-gate.lock")
+target_dir = tmp / "rot-target"
+target_dir.mkdir()
+os.chmod(target_dir, 0o700)
+for label in ("symlink-to-dir", "dir"):
+    rotated.unlink()
+    if label == "dir":
+        rotated.mkdir()
+    else:
+        rotated.symlink_to(target_dir)
+    log.write_bytes(b"x" * (262144 + 1))
+    clear_record()
+    r = run_gate("list")
+    moved_in = list(target_dir.iterdir()) + (list(rotated.iterdir()) if label == "dir" else [])
+    assert r.returncode == 126 and read_record() is None and not moved_in, f"gate_log_rotate_target_refused:{label}:{moved_in}"
+    assert log.stat().st_size == 262144 + 1 and not lock.exists(), f"gate_log_rotate_target_refused:{label}:state"
+    if label == "dir":
+        rotated.rmdir()
+    else:
+        rotated.unlink()
+    rotated.write_text("")
+
+# Concurrent requests during a rotation: every allow succeeds, exactly one gate rotates, and
+# .1 keeps the whole old generation.
+for trial in range(5):
+    big = b"x" * (262144 + 100)
+    log.write_bytes(big)
+    rotated.unlink()
+    procs = [subprocess.Popen([str(gate)], env=gate_env("list"), cwd=work, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for _ in range(6)]
+    codes = [proc.wait(timeout=60) for proc in procs]
+    for proc in procs:
+        proc.stderr.close()
+    assert codes == [0] * 6, f"gate_log_rotation_concurrent:rc:{codes}"
+    old = rotated.read_bytes()
+    assert old.startswith(big) and not lock.exists(), f"gate_log_rotation_concurrent:generation:{len(old)}"
+    tail = old[len(big):].decode() + log.read_text()
+    assert tail.count("\tallow\tlist\t") == 6, f"gate_log_rotation_concurrent:lines:{tail!r}"
+rotated.unlink()
+
 # XDG_STATE_HOME is honored when it is a safe absolute path.
 xdg = tmp / "xdg"
 clear_record()
 r = run_gate("list", extra={"XDG_STATE_HOME": str(xdg)})
-assert r.returncode == 0 and (xdg / "devbox/status-gate.log").exists(), "gate_log_xdg"
+assert r.returncode == 0 and (xdg / "devbox/gate/status-gate.log").exists(), "gate_log_xdg"
 
 # Fail closed for allows: if the log line cannot be written, the request is denied.
 blocked = tmp / "blocked"
@@ -280,10 +379,12 @@ for label, extra in (
     ("log-dir-is-file", {"XDG_STATE_HOME": str(blocked)}),
     ("relative-xdg", {"XDG_STATE_HOME": "relative/state"}),
     ("weird-xdg", {"XDG_STATE_HOME": str(tmp) + "/a b"}),
+    ("dot-segment-xdg", {"XDG_STATE_HOME": str(tmp) + "/xdg-dots/../xdg-norm"}),
 ):
     clear_record()
     r = run_gate("list", extra=extra)
     assert r.returncode == 126 and r.stderr == DENIED and read_record() is None, f"gate_allow_fail_closed:{label}:{r!r}"
+assert not (tmp / "xdg-norm").exists(), "gate_allow_fail_closed:dot-segment-xdg:created"
 
 # A symlinked log is never written through (allow fails closed, deny stays denied).
 victim = tmp / "victim"
@@ -323,6 +424,28 @@ for mode, label in ((0o775, "group-writable"), (0o757, "world-writable"), (0o644
     os.chmod(stub, mode)
     expect_denied("list", f"helper-{label}")
 os.chmod(stub, 0o755)
+
+# The gate fixes its OWN PATH before any check: a decoy `find` early on the caller's PATH
+# (which would vouch for anything) cannot get a group-writable helper accepted.
+decoy_bin = tmp / "decoy-bin"
+decoy_bin.mkdir()
+os.chmod(decoy_bin, 0o700)
+(decoy_bin / "find").write_text("#!/bin/sh\nexit 0\n")
+os.chmod(decoy_bin / "find", 0o755)
+os.chmod(stub, 0o775)
+clear_record()
+r = run_gate("list", extra={"PATH": f"{decoy_bin}:{os.environ.get('PATH', SAFE_PATH)}"})
+os.chmod(stub, 0o755)
+assert r.returncode == 126 and r.stderr == DENIED and read_record() is None, f"gate_own_path_fixed:{r!r}"
+
+# HOME must be a safe absolute directory before the helper runs (the log may live elsewhere).
+(work / "relhome").mkdir()
+(tmp / "h me").mkdir()
+for label, bad_home in (("relative", "relhome"), ("space", str(tmp / "h me")), ("missing", str(tmp / "no-such-home"))):
+    clear_record()
+    r = run_gate("list", extra={"HOME": bad_home, "XDG_STATE_HOME": str(tmp / "xdg-home")})
+    assert r.returncode == 126 and r.stderr == DENIED and read_record() is None, f"gate_home_checked:{label}:{r!r}"
+    assert log_lines(tmp / "xdg-home/devbox/gate/status-gate.log")[-1][4] == "home", f"gate_home_checked:{label}:reason"
 
 # A shared (group/world-writable) helper directory -> denied.
 for mode, label in ((0o777, "world"), (0o770, "group")):
@@ -386,5 +509,4 @@ assert not re.search(r"\b(ba|z|da)?sh\s+-c\b", body), "gate_source_no_eval:sh -c
 assert not re.search(r"(^|\s)(source|\.)\s", body, re.M), "gate_source_no_eval:sourcing"
 assert body.count("SSH_ORIGINAL_COMMAND") == 1, "gate_source_single_read"
 
-shutil.rmtree(tmp, ignore_errors=True)
 print(f"status_gate=PASS allowed={len(ALLOWED)} hostile={len(HOSTILE)}")
