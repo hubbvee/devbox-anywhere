@@ -61,6 +61,43 @@ def mutated(
         )
 
 
+# The tmux activity probe's window-existence proof, verbatim. Reverting it to the old name-targeted
+# probe (display-message "=S:W" silently falls back to the session's current window when W is
+# missing) must turn the fake-tmux test red: an agent with no window would report another's activity.
+ACTIVITY_WINDOW_PROOF = r'''        tab=$(printf '\t')
+        wins=$(tmux list-windows -t "=$1" -F "#{window_id}${tab}#{window_name}" 2>/dev/null) || { printf 'unknown'; return; }
+        wid=""; hits=0
+        while IFS= read -r wl; do
+          case "$wl" in @*"$tab"*) : ;; *) continue ;; esac
+          [ "${wl#*"$tab"}" = "$2" ] || continue
+          hits=$((hits + 1)); wid=${wl%%"$tab"*}
+        done <<< "$wins"
+        [ "$hits" -eq 1 ] || { printf 'unknown'; return; }
+        case "${wid#@}" in ''|*[!0-9]*) printf 'unknown'; return ;; esac
+        # A window name may contain a raw newline and so forge a "<id><TAB><agent>" row that
+        # points at ANOTHER window: the matched id must lead exactly one row.
+        idn=0
+        while IFS= read -r wl; do
+          if [ "${wl%%"$tab"*}" = "$wid" ]; then idn=$((idn + 1)); fi
+        done <<< "$wins"
+        [ "$idn" -eq 1 ] || { printf 'unknown'; return; }
+        # Facts for that id only (no names in this format, so nothing to forge but the command,
+        # which is likewise held to exactly one row). A window gone since the listing => unknown.
+        meta=$(tmux list-windows -t "=$1" -F "#{window_id}${tab}#{window_activity}${tab}#{pane_current_command}" 2>/dev/null) || { printf 'unknown'; return; }
+        mrow=""; mn=0
+        while IFS= read -r wl; do
+          if [ "${wl%%"$tab"*}" = "$wid" ]; then mn=$((mn + 1)); mrow=${wl#*"$tab"}; fi
+        done <<< "$meta"
+        [ "$mn" -eq 1 ] || { printf 'unknown'; return; }
+        case "$mrow" in *"$tab"*) : ;; *) printf 'unknown'; return ;; esac
+        awin=${mrow%%"$tab"*}
+        cmd=${mrow#*"$tab"}
+'''
+ACTIVITY_NAME_TARGET = r'''        wid="=$1:$2"
+        cmd=$(tmux display-message -p -t "$wid" '#{pane_current_command}' 2>/dev/null) || { printf 'unknown'; return; }
+        awin=$(tmux display-message -p -t "$wid" '#{window_activity}' 2>/dev/null)
+'''
+
 CASES = [
     ("compose-extra-port", "stack/docker-compose.yml", "before public exposure\n    volumes:\n", 'before public exposure\n      - "0.0.0.0:9999:8080"\n    volumes:\n', ["python3", "tests/test-compose-model.py"], "ports must contain exactly"),
     ("compose-password-override", "stack/docker-compose.yml", "in .env}\n    ports:\n", 'in .env}\n      - "PASSWORD=unsafe-override"\n    ports:\n', ["python3", "tests/test-compose-model.py"], "environment must contain exactly"),
@@ -106,7 +143,11 @@ CASES = [
     ("status-merged-blind", "scripts/devbox-session", 'if [ "$new" = false ] && git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', ':', ["python3", "tests/test-session-status.py"], "status_merged_true"),
     ("status-reapable-loosened", "scripts/devbox-session", 'if [ "$merged" = true ] && [ "$newness_known" = true ] && [ "$dirty" = false ] && [ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi', 'reapable=true', ["python3", "tests/test-session-status.py"], "status_reapable_false_when_dirty"),
     ("status-activity-fabricated", "scripts/devbox-session", '[ -n "$pcmd" ] || { printf \'unknown\'; return; }', ':', ["python3", "tests/test-session-status.py"], "act_unknown_on_empty_cmd"),
-    ('status-blocked-last-blank-line', 'scripts/devbox-session', 'tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n \'[^[:space:]]\' | tail -n1 | cut -d: -f2-', 'tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n \'\' | tail -n1 | cut -d: -f2-', ['python3', 'tests/test-session-activity-faketmux.py'], 'must read blocked'),
+    ('status-blocked-last-blank-line', 'scripts/devbox-session', 'tmux capture-pane -p -t "$wid" 2>/dev/null | grep -n \'[^[:space:]]\' | tail -n1 | cut -d: -f2-', 'tmux capture-pane -p -t "$wid" 2>/dev/null | grep -n \'\' | tail -n1 | cut -d: -f2-', ['python3', 'tests/test-session-activity-faketmux.py'], 'must read blocked'),
+    ('status-activity-window-existence-dropped', 'scripts/devbox-session', ACTIVITY_WINDOW_PROOF, ACTIVITY_NAME_TARGET, ['python3', 'tests/test-session-activity-faketmux.py'], 'no tmux window must read unknown'),
+    ('status-activity-ambiguous-window-accepted', 'scripts/devbox-session', '[ "$hits" -eq 1 ] || { printf \'unknown\'; return; }', '[ "$hits" -ge 1 ] || { printf \'unknown\'; return; }', ['python3', 'tests/test-session-activity-faketmux.py'], 'ambiguous and must read unknown'),
+    ('status-activity-forged-window-row', 'scripts/devbox-session', '[ "$idn" -eq 1 ] || { printf \'unknown\'; return; }', '[ "$idn" -ge 1 ] || { printf \'unknown\'; return; }', ['python3', 'tests/test-session-activity-faketmux.py'], 'newline-forged window row'),
+    ('status-activity-forged-facts-row', 'scripts/devbox-session', '[ "$mn" -eq 1 ] || { printf \'unknown\'; return; }', '[ "$mn" -ge 1 ] || { printf \'unknown\'; return; }', ['python3', 'tests/test-session-activity-faketmux.py'], 'newline-forged facts row'),
     ('status-fresh-reads-merged', 'scripts/devbox-session', 'if [ "$new" = false ] && git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', 'if git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', ['python3', 'tests/test-session-status.py'], 'fresh_agent_not_merged'),
     ('status-reapable-includes-working', 'scripts/devbox-session', '[ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi', '[ "$turn" = free ]; then reapable=true; fi', ['python3', 'tests/test-session-status.py'], 'reapable_excludes_working'),
     ('status-table-hides-dirty', 'scripts/devbox-session', 'elif [ "$merged" = true ] && [ "$dirty" = true ]; then gs="merged+dirty"', 'elif [ "$merged" = true ] && [ "$dirty" = true ]; then gs="merged"', ['python3', 'tests/test-session-status.py'], 'merged+dirty'),

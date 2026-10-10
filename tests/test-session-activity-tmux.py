@@ -9,6 +9,13 @@ This drives an actual tmux server and asserts:
   - a pane waiting at a "(y/n)" prompt  -> blocked   (previously misread as idle)
   - a pane running a non-shell command  -> working
   - an idle shell pane                  -> idle
+It also pins the window-existence proof. `tmux display-message -t "=S:W"` (also "=S:=W") silently
+falls back to the session's CURRENT window and exits 0 when W does not exist, so a name-targeted
+probe reported another window's activity for an agent that has no window at all:
+  - registered agent with NO window, current window an idle shell -> unknown (was misread idle)
+  - two windows carrying the agent's name (ambiguous)              -> unknown (was misread working)
+  - another window whose name holds a raw newline forging "<id>\t<agent>" for the current
+    (idle shell) window's id                                       -> unknown (was misread idle)
 
 tmux is present in the devbox image and the operator smoke runs this. When tmux is absent (e.g.
 a CI host without it) the test SKIPS cleanly rather than failing -- but it never fakes a pass.
@@ -59,7 +66,7 @@ def cleanup() -> None:
 
 
 try:
-    # --- a real git repo + three registered agents (no tmux at creation time) ---
+    # --- a real git repo + six registered agents (no tmux at creation time) ---
     repo = base / "repo"; repo.mkdir()
     git("init", "-q", "-b", "main", cwd=repo)
     git("config", "user.email", "t@e", cwd=repo)
@@ -78,7 +85,7 @@ try:
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
     }
-    for agent in ("rt-block", "rt-work", "rt-idle"):
+    for agent in ("rt-block", "rt-work", "rt-idle", "rt-ghost", "rt-dup", "rt-forge"):
         r = subprocess.run(["bash", str(WT_TOOL), "add", project, agent], env=wt_env,
                            capture_output=True, text=True)
         assert r.returncode == 0, f"wt add {agent}: {r.stderr}"
@@ -95,6 +102,21 @@ try:
     # rt-idle: a plain interactive shell at its prompt.
     tmux("new-window", "-t", f"={project}", "-n", "rt-idle", "-c", str(wt_idle),
          "bash --norc --noprofile -i")
+    # rt-dup: the agent's name labels TWO windows -> ambiguous.
+    tmux("new-window", "-t", f"={project}", "-n", "rt-dup", "-c", str(wt_root / "rt-dup"), "sleep 300")
+    tmux("new-window", "-t", f"={project}", "-n", "rt-dup", "-c", str(wt_root / "rt-dup"), "sleep 300")
+    # main: a non-agent idle shell (the operator's own window) -- made the session's CURRENT
+    # window below, which is exactly what a name-targeted display-message falls back to.
+    tmux("new-window", "-t", f"={project}", "-n", "main", "-c", str(base), "bash --norc --noprofile -i")
+    main_id = tmux("display-message", "-p", "-t", f"={project}:main", "#{window_id}").stdout.strip()
+    assert main_id.startswith("@") and main_id[1:].isdigit(), f"setup: main window id: {main_id!r}"
+    # rt-forge: no window of its own; a decoy window's name holds a raw newline so that
+    # list-windows prints a forged "<main window id>\t<rt-forge>" row.
+    tmux("new-window", "-t", f"={project}", "-n", f"decoy\n{main_id}\trt-forge", "sleep 300")
+    # rt-ghost: registered, NO window at all.
+    tmux("select-window", "-t", main_id)
+    names = tmux("list-windows", "-t", f"={project}", "-F", "#{window_name}").stdout.splitlines()
+    assert "rt-ghost" not in names and names.count("rt-dup") == 2, f"setup: windows {names!r}"
     time.sleep(1.5)  # let panes render so capture-pane + window_activity are populated
 
     # --- run status against the REAL tmux probe (no injected activity cmd); stale=0 so a
@@ -117,6 +139,12 @@ try:
         f"a non-shell foreground command must read working: {agents['rt-work']}"
     assert agents["rt-idle"]["activity"] == "idle", \
         f"an idle shell must read idle: {agents['rt-idle']}"
+    assert agents["rt-ghost"]["activity"] == "unknown", \
+        f"an agent with no tmux window must read unknown, not the current window's activity: {agents['rt-ghost']}"
+    assert agents["rt-dup"]["activity"] == "unknown", \
+        f"an agent whose name labels two windows is ambiguous and must read unknown: {agents['rt-dup']}"
+    assert agents["rt-forge"]["activity"] == "unknown", \
+        f"a newline-forged window row must not alias the agent to another window: {agents['rt-forge']}"
 
     print("session_activity_tmux=PASS")
 finally:
