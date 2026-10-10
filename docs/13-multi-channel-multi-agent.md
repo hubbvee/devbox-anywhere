@@ -62,9 +62,10 @@ executable. Run them from any shell in the devbox.
   is a detached tmux session, which works on this image where systemd is present but not PID 1
   (so `hermes gateway install` does not). See `docs/10-telegram-project-topics.md` for the full
   gateway example.
-- `devbox-status-gate` — a read-only forced command for a bot's SSH key: it answers only
-  `version`, `list`, and `status <project> [--json]`, and is inert until an `authorized_keys`
-  line uses it. See `docs/14-let-a-bot-manage-your-devbox.md`.
+
+The installer also places `devbox-status-gate` beside them: a read-only forced command for a
+bot's SSH key that answers only `version`, `list`, and `status <project> [--json]`, and is
+inert until an `authorized_keys` line uses it. See `docs/14-let-a-bot-manage-your-devbox.md`.
 
 ## Naming convention
 

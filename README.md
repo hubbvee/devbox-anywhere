@@ -64,7 +64,7 @@ use a blind `curl | sudo bash` path or print generated credentials.
   helpers but does nothing until a key uses it. One `restrict,command=...` line in
   `authorized_keys` lets that key ask only for `version`, `list`, or
   `status <project> [--json]`; everything else is denied (exit 126) and logged. Revoke =
-  delete the line.
+  delete the line. It limits the bot's key, not the instance's own agents.
 - **Let a bot manage coding work while you keep control** —
   [docs/14](docs/14-let-a-bot-manage-your-devbox.md): a separate instance with dev-only
   credentials, your own bridge for writes, human gates, independent verification, a

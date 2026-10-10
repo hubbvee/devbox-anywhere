@@ -88,7 +88,8 @@ approved checkout:
 
 ```bash
 cd /opt/devbox-anywhere
-./scripts/devbox-anywhere plan --json --approved-commit "$APPROVED_COMMIT" --instance bot
+./scripts/devbox-anywhere plan --json --approved-commit "$APPROVED_COMMIT" \
+  --instance bot --web-port 8180 --ssh-port 2322
 sudo ./scripts/install-devbox --dry-run --yes --approved-commit "$APPROVED_COMMIT" \
   --instance bot --web-port 8180 --ssh-port 2322
 sudo ./scripts/install-devbox --yes --approved-commit "$APPROVED_COMMIT" \
@@ -96,7 +97,10 @@ sudo ./scripts/install-devbox --yes --approved-commit "$APPROVED_COMMIT" \
 sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json --instance bot
 ```
 
-Add `--with-browser --browser-port N` if the instance also needs the opt-in GUI browser.
+`plan` needs the same `--instance`, `--web-port`, and `--ssh-port` as the installer;
+`preflight`, `verify`, and `diagnose` need only `--instance NAME`. Add
+`--with-browser --browser-port N` to both `plan` and the installer if the instance also
+needs the opt-in GUI browser.
 
 What changes for an instance named `NAME`:
 
@@ -112,13 +116,18 @@ What changes for an instance named `NAME`:
 - Ports must be in 1024–65535, distinct, not `8080`, `2222`, or `8081`, and not already
   in use; the installer refuses anything else.
 - Everything is separate: bind mounts, `authorized_keys`, CLI logins, helpers, sessions.
-  Add keys to `/data/devbox-NAME/ssh/authorized_keys`, and tunnel the instance's SSH port
-  instead of `2222` ([docs/05](05-connect-from-any-device.md)).
+  Add keys to the instance's own `~/.ssh/authorized_keys`, and tunnel the instance's SSH
+  port instead of `2222` ([docs/05](05-connect-from-any-device.md)). Once anything you do
+  not fully trust runs in the instance, edit its files from inside it as `coder` (see
+  [docs/14 step 3](14-let-a-bot-manage-your-devbox.md#3-add-the-gate-line)), not as host
+  root through `/data/devbox-NAME/...`, where a planted symlink would be followed.
 - **Without `--instance` nothing changes:** the default install, its paths, and its ports
   are exactly as before. Upgrade an instance by re-running the installer with the same
   flags.
-- For backups, see `scripts/backup-devbox.sh --help`
-  ([docs/09](09-backups-rebuilds-hardening.md)).
+- Backups: `scripts/backup-devbox.sh` takes no arguments (not even `--help`; running it
+  starts a backup) and targets one container. Read the comments at the top of the script
+  before pointing a copy of it at an instance, or take the stopped-instance `tar` backup
+  shown below ([docs/09](09-backups-rebuilds-hardening.md)).
 
 **Removing an instance.** Stop and remove its containers by Compose project name (run it
 from a directory without a compose file, so only the project name is used):
