@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
-"""Host-independent guard for the activity probe's "blocked" detection (last NON-BLANK line).
+"""Host-independent guard for the activity probe's tmux path (no real tmux needed).
 
 The real-tmux test (test-session-activity-tmux.py) is the high-fidelity layer but skips where
-tmux is absent (e.g. macOS, minimal CI), leaving the `status-blocked-last-blank-line` mutation
-unguarded there. This test needs NO real tmux: it puts a fake `tmux` first on PATH whose
-`capture-pane -p` prints a "(y/n)" prompt followed by blank padding rows (exactly the real-pane
-shape that broke the literal-last-line probe), with `has-session`/`display-message` stubbed so
-`devbox-session` classifies the pane. It therefore runs on every host and catches the mutation
-everywhere, while staying faithful to the four tmux subcommands the probe actually calls:
-  has-session -t =<s> ; display-message -p -t =<s>:<w> '#{pane_current_command}' and
-  '#{window_activity}' ; capture-pane -p -t =<s>:<w>.
+tmux is absent (e.g. macOS, minimal CI), leaving the probe's mutations unguarded there. This
+test puts a fake `tmux` first on PATH that models the subcommands the probe may call, including
+the real quirks it must not trust, so it runs on every host:
+  - has-session -t =<s>                 exit 0 for a known session, else 1
+  - list-windows -t =<s> -F <fmt>       one row per window, names/commands printed RAW (a newline
+                                        in one splits it over several lines, as real tmux does);
+                                        #{session_windows} is the true window count
+  - capture-pane -p -t <target>         exact resolution; a missing window errors (like real tmux)
+  - display-message -p -t <target> fmt  the real QUIRK: a missing window silently falls back to
+                                        the session's current window and exits 0
+Cases (three sessions, one status call each); "held" agents are merged+clean+free, so only the
+probe's verdict decides whether they read reapable:
+  waiting (no raw newlines anywhere):
+  - blk:      last NON-blank line is a "(y/n)" prompt above blank padding rows -> blocked
+  - idle:     a shell -> idle;  work: a non-shell command -> working
+  - ghost:    registered, NO window, current window an idle shell, and a window whose name merely
+              EXTENDS the agent's ("<agent>-2", busy) -> unknown; provably absent, so reapable
+  - dup:      two windows carry the agent's name -> unknown and NEVER reapable (may be live)
+  - gone:     window listed but capture-pane fails (vanished mid-probe) -> unknown, not reapable
+  - vanish:   window in the name listing but gone from the facts listing -> unknown, not reapable
+  - nocmd:    window with an empty pane command -> unknown, not reapable
+  - twofacts: the facts listing carries the window's id twice -> unknown, not reapable
+  forged: a decoy window's name holds raw newlines forging "<count>\t<id>\t<agent>" for the
+          current window -> the whole listing is rejected: the ghost reads unknown and a real,
+          live agent window in that session reads unknown and is NOT reapable
+  twin:   another window's pane command holds raw newlines forging a second facts row for the
+          agent's window id -> unknown, not reapable
+It also asserts the probe never addresses a window by NAME (the fallback-prone target form).
 """
 from __future__ import annotations
 
@@ -25,30 +45,99 @@ TOOL = REPO / "scripts/devbox-session"
 
 base = pathlib.Path(tempfile.mkdtemp(prefix="devbox-faketmux-"))
 
-# A fake `tmux`: answers the four subcommands the probe uses. capture-pane prints a waiting
-# prompt THEN blank padding rows, so the literal last line is blank (the defect) while the
-# last non-blank line is the prompt (the fix). window_activity=1 (epoch) => huge age => stalled.
-FAKE_TMUX = r"""#!/bin/sh
-sub=$1; shift
-case "$sub" in
-  has-session) exit 0 ;;
-  display-message)
-    fmt=$4
-    case "$fmt" in
-      *pane_current_command*) printf 'python\n' ;;   # non-shell -> not idle
-      *window_activity*) printf '1\n' ;;              # ancient -> stalled past any threshold
-      *) printf '\n' ;;
-    esac
-    ;;
-  capture-pane)
-    printf 'Overwrite existing file? (y/n) \n'        # the waiting prompt (last NON-blank line)
-    printf '\n'                                        # blank padding rows below the cursor,
-    printf '\n'                                        # exactly what a non-full real pane shows
-    printf '\n'
-    ;;
-  *) exit 0 ;;
-esac
-"""
+# A fake `tmux` driven by a JSON spec ($FAKE_TMUX_SPEC); every call's argv is appended to
+# $FAKE_TMUX_LOG (one JSON array per line). Unknown subcommands fail loudly (exit 2).
+FAKE_TMUX = r'''#!/usr/bin/env python3
+import json, os, re, sys
+
+spec = json.load(open(os.environ["FAKE_TMUX_SPEC"]))
+with open(os.environ["FAKE_TMUX_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+sessions = spec["sessions"]
+args = sys.argv[1:]
+sub = args.pop(0) if args else ""
+opts, pos = {}, []
+while args:
+    a = args.pop(0)
+    if a in ("-t", "-F"):
+        opts[a] = args.pop(0) if args else ""
+    elif a.startswith("-"):
+        opts[a] = True
+    else:
+        pos.append(a)
+
+def render(fmt, w, count):
+    vals = {"window_id": w["id"], "window_name": w["name"], "window_index": str(w["index"]),
+            "window_activity": str(w["activity"]), "pane_current_command": w["cmd"],
+            "session_windows": str(count)}
+    return re.sub(r"#\{([a-z_]+)\}", lambda m: vals.get(m.group(1), ""), fmt)
+
+def session_of(target):
+    if not target.startswith("="):
+        return None
+    return sessions.get(target[1:].split(":", 1)[0])
+
+def strict(target):
+    # exact resolution, as capture-pane/list-windows do: no fallback
+    for s in sessions.values():
+        for w in s["windows"]:
+            if target == w["id"]:
+                return w
+    s = session_of(target)
+    if s is None or ":" not in target:
+        return None
+    win = target.split(":", 1)[1].lstrip("=")
+    for w in s["windows"]:
+        if win in (w["name"], str(w["index"])):
+            return w
+    return None
+
+t = opts.get("-t", "")
+if sub == "has-session":
+    sys.exit(0 if session_of(t) is not None and ":" not in t else 1)
+if sub == "list-windows":
+    s = session_of(t)
+    if s is None:
+        sys.stderr.write("can't find session\n"); sys.exit(1)
+    fmt = opts.get("-F", "")
+    facts = "pane_current_command" in fmt
+    # names_only: the window vanished between the name listing and the facts listing.
+    # facts_dup:  a facts listing that repeats the window's id (a second, different row).
+    rows = []
+    for w in s["windows"]:
+        if facts and w.get("names_only"):
+            continue
+        rows.append(w)
+        if facts and w.get("facts_dup"):
+            rows.append(dict(w, cmd=w["facts_dup"]))
+    for w in rows:
+        sys.stdout.write(render(fmt, w, len(rows)) + "\n")
+    sys.exit(0)
+if sub == "capture-pane":
+    w = strict(t)
+    if w is None or w.get("capture_fails"):
+        sys.stderr.write("can't find window\n"); sys.exit(1)
+    sys.stdout.write(w["capture"])
+    sys.exit(0)
+if sub == "display-message":
+    w = strict(t)
+    if w is None:
+        s = session_of(t)
+        if s is None and not t.startswith("@"):
+            sys.stderr.write("can't find session\n"); sys.exit(1)
+        if s is not None:
+            # the real quirk: fall back to the session's CURRENT window, exit 0
+            w = next(x for x in s["windows"] if x["id"] == s["current"])
+    fmt = pos[0] if pos else ""
+    sys.stdout.write((render(fmt, w, 0) if w else re.sub(r"#\{[a-z_]+\}", "", fmt)) + "\n")
+    sys.exit(0)
+sys.stderr.write("fake tmux: unexpected subcommand %r\n" % sub)
+sys.exit(2)
+'''
+
+PROMPT_CAPTURE = "Overwrite existing file? (y/n) \n\n\n\n"   # prompt, then blank padding rows
+SHELL_CAPTURE = "$ \n\n\n"
+BUSY_CAPTURE = "compiling...\n\n"
 
 
 def cleanup() -> None:
@@ -62,8 +151,48 @@ try:
     fake.write_text(FAKE_TMUX)
     fake.chmod(0o755)
 
-    # A real git repo + one registered worktree (git facts must not crash); base pinned so the
-    # loop never needs to resolve main/master. The registry window name == agent.
+    # window_activity=1 (epoch) => huge age => stalled past any threshold. @0/@20/@30 are each
+    # session's CURRENT window: an idle shell, exactly what a name-target fallback would read.
+    def win(wid, index, name, cmd, capture, **extra):
+        return {"id": wid, "index": index, "name": name, "cmd": cmd, "activity": 1,
+                "capture": capture, **extra}
+
+    sessions = {
+        "waiting": {"current": "@0", "windows": [
+            win("@0", 1, "main", "bash", SHELL_CAPTURE),
+            win("@1", 2, "waiting-blk", "python", PROMPT_CAPTURE),
+            win("@2", 3, "waiting-dup", "python", BUSY_CAPTURE),
+            win("@3", 4, "waiting-dup", "python", BUSY_CAPTURE),
+            # a name that only EXTENDS the ghost's: a prefix/glob match would alias it (busy)
+            win("@4", 5, "waiting-ghost-2", "python", BUSY_CAPTURE),
+            win("@5", 6, "waiting-idle", "bash", SHELL_CAPTURE),
+            win("@6", 7, "waiting-work", "python", BUSY_CAPTURE),
+            win("@7", 8, "waiting-gone", "bash", SHELL_CAPTURE, capture_fails=True),
+            win("@8", 9, "waiting-vanish", "bash", SHELL_CAPTURE, names_only=True),
+            win("@9", 10, "waiting-nocmd", "", SHELL_CAPTURE),
+            win("@10", 11, "waiting-twofacts", "bash", SHELL_CAPTURE, facts_dup="python"),
+        ]},
+        # a name with raw newlines: list-windows prints "<n>\t@21\tdecoy" and then a forged
+        # "<n>\t@20\tforged-forge" row (count prefix included, so only the line count betrays it)
+        "forged": {"current": "@20", "windows": [
+            win("@20", 1, "main", "bash", SHELL_CAPTURE),
+            win("@21", 2, "decoy\n3\t@20\tforged-forge", "sleep", BUSY_CAPTURE),
+            win("@22", 3, "forged-live", "bash", SHELL_CAPTURE),
+        ]},
+        # a pane command with raw newlines forging a second facts row for @30 (busy command)
+        "twin": {"current": "@30", "windows": [
+            win("@30", 1, "twin-agent", "bash", SHELL_CAPTURE),
+            win("@31", 2, "other", "x\n2\t@30\t1\tpython", BUSY_CAPTURE),
+        ]},
+    }
+    spec = base / "spec.json"
+    spec.write_text(json.dumps({"sessions": sessions}))
+    calls_log = base / "calls.log"
+
+    # A real git repo + one worktree per registered agent (git facts must not crash); base pinned
+    # so the loop never needs to resolve main/master. The registry window name == agent. Rows
+    # carry the fork SHA; agents in MERGED get a commit merged into main (merged, clean, turn
+    # free), so their reapable flag is decided by the activity probe alone.
     repo = base / "repo"; repo.mkdir()
 
     def git(*a, cwd):
@@ -75,13 +204,29 @@ try:
     (repo / "README.md").write_text("seed\n")
     git("add", "README.md", cwd=repo)
     git("commit", "-q", "-m", "seed", cwd=repo)
+    fork = git("rev-parse", "HEAD", cwd=repo).stdout.strip()
 
-    wt = base / "wt-blk"
-    git("worktree", "add", "-q", "-b", "agent/blk", str(wt), cwd=repo)
-
+    projects = {
+        "waiting": ("waiting-blk", "waiting-ghost", "waiting-dup", "waiting-idle", "waiting-work",
+                    "waiting-gone", "waiting-vanish", "waiting-nocmd", "waiting-twofacts"),
+        "forged": ("forged-forge", "forged-live"),
+        "twin": ("twin-agent",),
+    }
+    MERGED = {"waiting-ghost", "waiting-dup", "waiting-gone", "waiting-vanish", "waiting-nocmd",
+              "waiting-twofacts", "forged-live", "twin-agent"}
     home = base / "sessions"; home.mkdir()
-    reg = home / "waiting.tsv"
-    reg.write_text(f"waiting-blk\t{wt}\tagent/blk\n")
+    for project, names in projects.items():
+        rows = []
+        for agent in names:
+            wt = base / f"wt-{agent}"
+            git("worktree", "add", "-q", "-b", f"agent/{agent}", str(wt), fork, cwd=repo)
+            if agent in MERGED:
+                (wt / f"{agent}.txt").write_text("done\n")
+                git("add", f"{agent}.txt", cwd=wt)
+                git("-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", agent, cwd=wt)
+                git("merge", "-q", "--no-ff", "-m", f"merge {agent}", f"agent/{agent}", cwd=repo)
+            rows.append(f"{agent}\t{wt}\tagent/{agent}\t{fork}\n")
+        (home / f"{project}.tsv").write_text("".join(rows))
 
     # PATH with the fake tmux FIRST so devbox-session's `command -v tmux` and every `tmux` call
     # resolve to the shim regardless of whether a real tmux exists on this host.
@@ -90,19 +235,80 @@ try:
         "DEVBOX_SESSION_HOME": str(home),
         "DEVBOX_STATUS_BASE": "main",
         "DEVBOX_STATUS_STALE": "0",
+        "DEVBOX_TURN_STATE": str(base / "turn"),
+        "FAKE_TMUX_SPEC": str(spec),
+        "FAKE_TMUX_LOG": str(calls_log),
     }
     env.pop("DEVBOX_STATUS_ACTIVITY_CMD", None)  # force the real __tmux__ path, not an injected probe
     env.pop("TMUX", None)
 
-    r = subprocess.run(["bash", str(TOOL), "status", "waiting", "--json"],
-                       env=env, capture_output=True, text=True)
-    assert r.returncode == 0, f"status must succeed with the fake tmux: {r.stderr}"
-    agents = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
-    blk = agents["waiting-blk"]
+    def status(project):
+        r = subprocess.run(["bash", str(TOOL), "status", project, "--json"],
+                           env=env, capture_output=True, text=True)
+        assert r.returncode == 0, f"status must succeed with the fake tmux: {r.stderr}"
+        got = {a["agent"]: a for a in json.loads(r.stdout)["agents"]}
+        for agent in MERGED & set(got):
+            assert got[agent]["merged"] is True and got[agent]["dirty"] is False \
+                and got[agent]["turn"] == "free", f"setup: {agent} must be merged, clean, free: {got[agent]}"
+        return got
+
+    agents = status("waiting")
     # The probe must read the last NON-BLANK line (the prompt) -> blocked. The mutation that
     # takes the literal last line sees a blank padding row and misclassifies as working.
+    blk = agents["waiting-blk"]
     assert blk["activity"] == "blocked", \
         f"a pane whose last non-blank line is a (y/n) prompt must read blocked: {blk}"
+    assert agents["waiting-idle"]["activity"] == "idle", \
+        f"an idle shell must read idle: {agents['waiting-idle']}"
+    assert agents["waiting-work"]["activity"] == "working", \
+        f"a non-shell foreground command must read working: {agents['waiting-work']}"
+    # No window at all: a name-targeted probe falls back to the current (idle shell) window, and
+    # a prefix/glob name match would alias the busy "waiting-ghost-2" window.
+    ghost = agents["waiting-ghost"]
+    assert ghost["activity"] == "unknown", \
+        f"an agent with no tmux window must read unknown, not the current window's activity: {ghost}"
+    assert ghost["reapable"] is True, \
+        f"a provably absent window (merged, clean, free) stays reapable: {ghost}"
+    dup = agents["waiting-dup"]
+    assert dup["activity"] == "unknown", \
+        f"an agent whose name labels two windows is ambiguous and must read unknown: {dup}"
+    assert dup["reapable"] is False, \
+        f"a live but ambiguous window must never be reapable: {dup}"
+    gone = agents["waiting-gone"]
+    assert gone["activity"] == "unknown" and gone["reapable"] is False, \
+        f"a window that vanished before capture must read unknown and not reapable: {gone}"
+    vanish = agents["waiting-vanish"]
+    assert vanish["activity"] == "unknown" and vanish["reapable"] is False, \
+        f"a window gone from the facts listing must read unknown and not reapable: {vanish}"
+    nocmd = agents["waiting-nocmd"]
+    assert nocmd["activity"] == "unknown" and nocmd["reapable"] is False, \
+        f"a window with no readable command must read unknown and never be reapable: {nocmd}"
+    twofacts = agents["waiting-twofacts"]
+    assert twofacts["activity"] == "unknown" and twofacts["reapable"] is False, \
+        f"an inconsistent facts listing (id twice) must read unknown and not reapable: {twofacts}"
+
+    agents = status("forged")
+    forge = agents["forged-forge"]
+    assert forge["activity"] == "unknown", \
+        f"a newline-forged window row must not alias the agent to another window: {forge}"
+    live = agents["forged-live"]
+    assert live["activity"] == "unknown" and live["reapable"] is False, \
+        f"a listing broken by a newline-forged row must read unknown and not reapable: {live}"
+
+    agents = status("twin")
+    twin = agents["twin-agent"]
+    assert twin["activity"] == "unknown" and twin["reapable"] is False, \
+        f"a newline-forged facts row for the same window id must read unknown: {twin}"
+
+    # Never address a window by NAME: that is the target form tmux resolves with a fallback.
+    calls = [json.loads(line) for line in calls_log.read_text().splitlines()]
+    assert calls, "the fake tmux must have been called"
+    for argv in calls:
+        if "-t" in argv:
+            target = argv[argv.index("-t") + 1]
+            assert target in ("=waiting", "=forged", "=twin") or (target.startswith("@") and target[1:].isdigit()), \
+                f"probe must target the session or a window id, never a window name: {argv}"
+        assert argv[0] != "display-message", f"probe must not trust display-message: {argv}"
 
     print("session_activity_faketmux=PASS")
 finally:
