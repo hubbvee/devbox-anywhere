@@ -63,6 +63,22 @@ def hidden_change(repo, env, approved):
 
 expect_rejected(hidden_change, "checkout bytes differ from approved commit")
 
+# Every shipped helper is a required source input: a committed symlink in place of the
+# status gate (clean tree, matching bytes) must still be refused before any build.
+installer, env, log, _, _ = prepare("success")
+gate_source = installer.parents[1] / "scripts/devbox-status-gate"
+gate_source.unlink()
+gate_source.symlink_to("devbox-session")
+subprocess.run(["git", "add", "-A"], cwd=installer.parents[1], env=TEST_GIT_ENV, check=True)
+subprocess.run(["git", "commit", "-qm", "symlinked gate"], cwd=installer.parents[1], env=TEST_GIT_ENV, check=True)
+symlink_approved = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=installer.parents[1], env=TEST_GIT_ENV, text=True).strip()
+result = invoke(installer, env, symlink_approved)
+assert result.returncode != 0 and (
+    "required source input must be a regular non-symlink file: scripts/devbox-status-gate" in result.stderr
+) and not any(
+    "build" in json.loads(line)["args"] for line in (log.read_text().splitlines() if log.exists() else [])
+), "source_gate_symlink_rejected"
+
 # Valid-shape but mismatched exact SHA.
 installer, env, _, _, approved = prepare("success")
 wrong = "0" * 40 if approved != "0" * 40 else "1" * 40

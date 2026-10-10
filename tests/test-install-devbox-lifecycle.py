@@ -95,12 +95,14 @@ known = {{
     tuple(prefix + ["cp", {str(fixture / 'scripts/devbox-session')!r}, C + ":/tmp/devbox-session"]): ("helper-session-fail", 43, None),
     tuple(prefix + ["cp", {str(fixture / 'scripts/devbox-turn')!r}, C + ":/tmp/devbox-turn"]): ("helper-turn-fail", 43, None),
     tuple(prefix + ["cp", {str(fixture / 'scripts/devbox-worktree')!r}, C + ":/tmp/devbox-worktree"]): ("helper-worktree-fail", 43, None),
+    tuple(prefix + ["cp", {str(fixture / 'scripts/devbox-status-gate')!r}, C + ":/tmp/devbox-status-gate"]): ("helper-gate-fail", 43, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox", "/home/coder/.local/bin"]): ("install-devbox-fail", 45, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox-daemon", "/home/coder/.local/bin"]): ("install-daemon-fail", 45, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox-relink", "/home/coder/.local/bin"]): ("install-relink-fail", 46, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox-session", "/home/coder/.local/bin"]): ("install-session-fail", 45, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox-turn", "/home/coder/.local/bin"]): ("install-turn-fail", 45, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox-worktree", "/home/coder/.local/bin"]): ("install-worktree-fail", 45, None),
+    tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", blob, "_", "devbox-status-gate", "/home/coder/.local/bin"]): ("install-gate-fail", 45, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/usr/bin/mkdir", "-p", "-m", "0700", "/home/coder/.local/share/devbox-relink.d"]): ("mkdir-dropins-fail", 49, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/usr/bin/mkdir", "-p", "-m", "0700", "/home/coder/.local/share/devbox-daemons.d"]): ("mkdir-daemons-fail", 49, None),
     tuple(prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", C, "/usr/bin/rm", "-f", "/tmp/devbox"]): ("remove-fail", 47, None),
@@ -109,8 +111,9 @@ known = {{
     tuple(prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", C, "/usr/bin/rm", "-f", "/tmp/devbox-session"]): ("remove-fail", 47, None),
     tuple(prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", C, "/usr/bin/rm", "-f", "/tmp/devbox-turn"]): ("remove-fail", 47, None),
     tuple(prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", C, "/usr/bin/rm", "-f", "/tmp/devbox-worktree"]): ("remove-fail", 47, None),
+    tuple(prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", C, "/usr/bin/rm", "-f", "/tmp/devbox-status-gate"]): ("remove-fail", 47, None),
     tuple(prefix + ["inspect", "-f", "{{{{.State.Running}}}}", C]): ("inspect-fail", 1, "true"),
-    tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", '/usr/bin/tmux -V >/dev/null && /usr/bin/test -x "$HOME/.local/bin/devbox" && /usr/bin/test -x "$HOME/.local/bin/devbox-daemon" && /usr/bin/test -x "$HOME/.local/bin/devbox-relink" && /usr/bin/test -x "$HOME/.local/bin/devbox-session" && /usr/bin/test -x "$HOME/.local/bin/devbox-turn" && /usr/bin/test -x "$HOME/.local/bin/devbox-worktree"']): ("readiness-fail", 48, None),
+    tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/bin/sh", "-c", '/usr/bin/tmux -V >/dev/null && /usr/bin/test -x "$HOME/.local/bin/devbox" && /usr/bin/test -x "$HOME/.local/bin/devbox-daemon" && /usr/bin/test -x "$HOME/.local/bin/devbox-relink" && /usr/bin/test -x "$HOME/.local/bin/devbox-session" && /usr/bin/test -x "$HOME/.local/bin/devbox-turn" && /usr/bin/test -x "$HOME/.local/bin/devbox-worktree" && /usr/bin/test -x "$HOME/.local/bin/devbox-status-gate"']): ("readiness-fail", 48, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"]): ("http-fail", 45, None),
     tuple(prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", C, "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"]): ("ssh-fail", 46, None),
 }}
@@ -226,7 +229,7 @@ assert rerun.returncode == 0, rerun.stderr
 assert env_file.read_text().splitlines()[0] == password_line
 
 records = [json.loads(line) for line in log.read_text().splitlines()]
-assert len(records) == 56, f"docker_exact_call_count: {len(records)}"
+assert len(records) == 62, f"docker_exact_call_count: {len(records)}"
 prefix = ["--context", "default"]
 compose = prefix + ["compose", "--env-file", str(env_file), "-f", str(installer.parents[1] / "stack/docker-compose.yml")]
 expected_argv = [
@@ -252,15 +255,18 @@ expected_argv = [
     prefix + ["cp", str(installer.parents[1] / "scripts/devbox-worktree"), "devbox:/tmp/devbox-worktree"],
     prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", INSTALL_BLOB, "_", "devbox-worktree", "/home/coder/.local/bin"],
     prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "devbox", "/usr/bin/rm", "-f", "/tmp/devbox-worktree"],
+    prefix + ["cp", str(installer.parents[1] / "scripts/devbox-status-gate"), "devbox:/tmp/devbox-status-gate"],
+    prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", INSTALL_BLOB, "_", "devbox-status-gate", "/home/coder/.local/bin"],
+    prefix + ["exec", "--user", "root", "--env", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "devbox", "/usr/bin/rm", "-f", "/tmp/devbox-status-gate"],
     prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/mkdir", "-p", "-m", "0700", "/home/coder/.local/share/devbox-relink.d"],
     prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/mkdir", "-p", "-m", "0700", "/home/coder/.local/share/devbox-daemons.d"],
     prefix + ["inspect", "-f", "{{.State.Running}}", "devbox"],
-    prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", '/usr/bin/tmux -V >/dev/null && /usr/bin/test -x "$HOME/.local/bin/devbox" && /usr/bin/test -x "$HOME/.local/bin/devbox-daemon" && /usr/bin/test -x "$HOME/.local/bin/devbox-relink" && /usr/bin/test -x "$HOME/.local/bin/devbox-session" && /usr/bin/test -x "$HOME/.local/bin/devbox-turn" && /usr/bin/test -x "$HOME/.local/bin/devbox-worktree"'],
+    prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/bin/sh", "-c", '/usr/bin/tmux -V >/dev/null && /usr/bin/test -x "$HOME/.local/bin/devbox" && /usr/bin/test -x "$HOME/.local/bin/devbox-daemon" && /usr/bin/test -x "$HOME/.local/bin/devbox-relink" && /usr/bin/test -x "$HOME/.local/bin/devbox-session" && /usr/bin/test -x "$HOME/.local/bin/devbox-turn" && /usr/bin/test -x "$HOME/.local/bin/devbox-worktree" && /usr/bin/test -x "$HOME/.local/bin/devbox-status-gate"'],
     prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"],
     prefix + ["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"],
 ]
-assert [record["args"] for record in records[:28]] == expected_argv, "docker_exact_order:first_install"
-assert [record["args"] for record in records[28:]] == expected_argv, "docker_exact_order:rerun"
+assert [record["args"] for record in records[:31]] == expected_argv, "docker_exact_order:first_install"
+assert [record["args"] for record in records[31:]] == expected_argv, "docker_exact_order:rerun"
 for record in records:
     assert record["args"][:2] == ["--context", "default"], "docker_context"
     assert record["docker_config"] == "/nonexistent/devbox-anywhere-docker-config", "docker_config"
@@ -271,7 +277,8 @@ for mode in (
     "helper-devbox-fail", "helper-daemon-fail", "helper-relink-fail", "helper-session-fail",
     "helper-turn-fail", "helper-worktree-fail", "install-devbox-fail", "install-daemon-fail",
     "install-relink-fail", "install-session-fail", "install-turn-fail",
-    "install-worktree-fail", "remove-fail", "readiness-fail", "inspect-fail",
+    "install-worktree-fail", "helper-gate-fail", "install-gate-fail",
+    "remove-fail", "readiness-fail", "inspect-fail",
     "http-fail", "ssh-fail",
 ):
     result, _, _ = run(mode)

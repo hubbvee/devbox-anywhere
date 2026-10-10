@@ -84,6 +84,7 @@ elif args in [
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-session"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-turn"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-worktree"],
+    ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/test", "-x", "/home/coder/.local/bin/devbox-status-gate"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"],
     ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox", "/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"],
 ]:
@@ -132,7 +133,7 @@ else:
     ids = {item["id"] for item in verify_report["checks"] if item["status"] == "pass"}
     assert ids == {
         "state.file", "container.running", "helper.devbox", "helper.devbox-daemon", "helper.devbox-relink",
-        "helper.devbox-session", "helper.devbox-turn", "helper.devbox-worktree",
+        "helper.devbox-session", "helper.devbox-turn", "helper.devbox-worktree", "helper.devbox-status-gate",
         "service.http", "service.ssh", "network.bindings", "storage.mounts",
     }, "verify_check_ids"
     assert "TEST_SECRET_MUST_NOT_APPEAR" not in verified.stdout + verified.stderr
@@ -210,6 +211,19 @@ esac
     assert unsafe_mount.returncode == 1
     unsafe_mount_report = json.loads(unsafe_mount.stdout)
     assert {item["id"]: item["status"] for item in unsafe_mount_report["checks"]}["storage.mounts"] == "fail"
+
+    # Docker missing entirely: every Docker-backed check is still reported, each as a fail, so
+    # the fallback list can never drift from the live check list (a helper added to one only).
+    no_docker_bin = root / "no-docker-bin"
+    no_docker_bin.mkdir()
+    no_docker_harness = root / "devbox-anywhere-no-docker"
+    no_docker_harness.write_text(harness_text.replace(f'SAFE_PATH = "{fake_bin}:/usr/bin:/bin"', f'SAFE_PATH = "{no_docker_bin}"'))
+    no_docker_harness.chmod(0o755)
+    no_docker = subprocess.run([str(no_docker_harness), "verify", "--json"], cwd=ROOT, env=env, capture_output=True, text=True)
+    assert no_docker.returncode == 1, "verify_docker_missing_ids: " + no_docker.stderr
+    assert {item["id"]: item["status"] for item in json.loads(no_docker.stdout)["checks"]} == {"state.file": "pass"} | {
+        check_id: "fail" for check_id in ids - {"state.file"}
+    }, "verify_docker_missing_ids"
 
     docker.write_text("#!/bin/sh\nexit 1\n")
     failed = run("diagnose", "--json", env=env)
@@ -335,7 +349,7 @@ def instance_docker(path: pathlib.Path, log: pathlib.Path, project: str = "devbo
     container name) exits 64 and turns the corresponding check red."""
     exec_prefix = ["--context", "default", "exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", "devbox-myapp"]
     passing = [exec_prefix + ["/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"] for helper in (
-        "devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree")]
+        "devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree", "devbox-status-gate")]
     passing += [
         exec_prefix + ["/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"],
         exec_prefix + ["/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"],
@@ -402,7 +416,7 @@ with tempfile.TemporaryDirectory() as td:
     assert {item["id"] for item in instance_report["checks"] if item["status"] == "pass"} == {
         "state.file", "container.project", "container.running", "helper.devbox", "helper.devbox-daemon",
         "helper.devbox-relink", "helper.devbox-session", "helper.devbox-turn", "helper.devbox-worktree",
-        "service.http", "service.ssh", "network.bindings", "storage.mounts", "relink.targets",
+        "helper.devbox-status-gate", "service.http", "service.ssh", "network.bindings", "storage.mounts", "relink.targets",
     }, "harness_instance_check_ids"
     assert instance_report["instance"] == {
         "name": "myapp", "project": "devbox-myapp", "container": "devbox-myapp",

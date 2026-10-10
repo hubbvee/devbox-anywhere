@@ -236,7 +236,7 @@ while IFS= read -r -d '' source_path; do
   (( (8#$source_mode & 0022) == 0 )) || die "source input is group/other writable: $source_path"
 done < <(find "$REPO_ROOT" -xdev -print0)
 unset source_mode source_path
-for source_path in stack/docker-compose.yml stack/Dockerfile stack/entrypoint.sh scripts/devbox scripts/devbox-relink scripts/devbox-session scripts/devbox-turn scripts/devbox-worktree; do
+for source_path in stack/docker-compose.yml stack/Dockerfile stack/entrypoint.sh scripts/devbox scripts/devbox-relink scripts/devbox-session scripts/devbox-turn scripts/devbox-worktree scripts/devbox-status-gate; do
   [[ -f $REPO_ROOT/$source_path && ! -L $REPO_ROOT/$source_path ]] \
     || die "required source input must be a regular non-symlink file: $source_path"
 done
@@ -392,7 +392,8 @@ fi
 "${compose[@]}" build --pull=false
 "${compose[@]}" up -d
 
-helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"
+# devbox-status-gate is inert until an operator adds a restrict,command=... authorized_keys line.
+helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"
 # A3: preserve operator customization across upgrades (fixes D1). Constant-argv backup: a
 # differing on-box helper is copied to <helper>.pre-upgrade.<utc>.bak before overwrite, with a
 # machine-readable PRESERVED notice; an identical file is left untouched. For devbox-relink we

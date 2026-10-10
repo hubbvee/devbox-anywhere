@@ -440,6 +440,7 @@ def verify_report(target: Target) -> dict[str, Any]:
             ("helper.devbox-session", "Docker is missing"),
             ("helper.devbox-turn", "Docker is missing"),
             ("helper.devbox-worktree", "Docker is missing"),
+            ("helper.devbox-status-gate", "Docker is missing"),
             ("service.http", "Docker is missing"),
             ("service.ssh", "Docker is missing"),
         ):
@@ -508,7 +509,7 @@ def verify_report(target: Target) -> dict[str, Any]:
             mounts_ok,
             "Docker mounts match fixed persistent paths" if mounts_ok else "Docker mounts differ from fixed persistent paths",
         ))
-        for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"):
+        for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree", "devbox-status-gate"):
             ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/usr/bin/test", "-x", f"/home/coder/.local/bin/{helper}"])
             checks.append(check(f"helper.{helper}", ok, f"{helper} helper is executable" if ok else f"{helper} helper is unavailable"))
         http_ok = docker_ok(["exec", "--user", "coder", "--env", "PATH=/usr/bin:/bin", container, "/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"])

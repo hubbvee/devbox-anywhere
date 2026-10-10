@@ -174,7 +174,7 @@ expected_argv: list[list[str]] = [
     compose + ["build", "--pull=false"],
     compose + ["up", "-d"],
 ]
-helpers = ["devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"]
+helpers = ["devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree", "devbox-status-gate"]
 for helper in helpers:
     expected_argv += [
         prefix + ["cp", str(fixture / f"scripts/{helper}"), f"devbox-myapp:/tmp/{helper}"],
