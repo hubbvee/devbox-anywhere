@@ -76,7 +76,8 @@ use a blind `curl | sudo bash` path or print generated credentials.
   credentials, your own bridge for writes, human gates, independent verification, a
   staged autonomy ladder, and a threat model.
 - **Upgrading:** to add an instance to an existing box, first move `/opt/devbox-anywhere`
-  to the approved v1.8.0 commit and re-run the default installer
+  to the approved v1.8.0 commit and re-run the default installer with the same flags you
+  first installed with, such as `--expose-ssh` or `--with-browser`
   ([docs/14 step 1](docs/14-let-a-bot-manage-your-devbox.md#1-create-the-bots-instance)).
 - **Fixed:** the status board now proves an agent's tmux window exists before reading it.
   An agent with no window reads `unknown` instead of borrowing the session's main shell

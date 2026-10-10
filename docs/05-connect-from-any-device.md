@@ -40,6 +40,17 @@ keep the tunnel open and use `HostName 127.0.0.1` instead:
 cat laptop-devbox.pub | sudo tee -a /data/devbox/ssh/authorized_keys
 ```
 
+That host-root append is for a fresh devbox, before any agent has run in it.
+`/data/devbox/ssh` is the container's `~/.ssh`, so anything running inside can replace
+`authorized_keys` with a symlink, and host root would then append to whatever host file it
+points at. Once agents (or anything you do not fully trust) run in the devbox, add keys
+from inside the container as `coder` instead:
+
+```bash
+# on the SERVER (host): append from inside the container, as coder
+sudo docker exec -i --user coder devbox sh -c 'cat >> /home/coder/.ssh/authorized_keys' < laptop-devbox.pub
+```
+
 ```sshconfig
 # ~/.ssh/config on your device
 Host devbox
@@ -81,8 +92,9 @@ names are sanitized (`[A-Za-z0-9._-]+`) against injection. Lost phone = delete t
 
 ### Host 2 — "devbox shell" (full container shell)
 
-Append the same phone pubkey to `/data/devbox/ssh/authorized_keys` (the *container*
-sshd). Direct Termius access to `YOUR_SERVER_IP`, port `2222`, user `coder` requires
+Append the same phone pubkey to the container's `authorized_keys` (the *container*
+sshd), the same way as in section C: the in-container `docker exec` append once agents run
+in the devbox. Direct Termius access to `YOUR_SERVER_IP`, port `2222`, user `coder` requires
 explicit `--expose-ssh` mode and a restrictive firewall. With the private default, use a
 Termius host/port-forwarding setup capable of maintaining the host SSH tunnel first.
 This gives a normal shell for file management and one-off commands; from there

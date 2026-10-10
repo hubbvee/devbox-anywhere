@@ -312,9 +312,11 @@ called `myproject`. Substitute your own; keep everything else exactly as written
 If this server already runs a devbox installed from a release older than v1.8.0, upgrade
 first: approve the v1.8.0 release and re-create `/opt/devbox-anywhere` at its exact commit
 ([docs/00](00-agent-guided-install.md) step 1, so `$APPROVED_COMMIT` is that commit), then
-re-run the default installer from it ([docs/00](00-agent-guided-install.md) step 3). An older
-checkout refuses `--instance` (`unknown option`), and your default devbox only gets
-`devbox-status-gate`, which `verify` checks for, from that re-run.
+re-run the default installer from it ([docs/00](00-agent-guided-install.md) step 3) with the
+same flags you first installed with (for example `--expose-ssh` or `--with-browser`): the
+installer does not remember earlier choices, so a bare re-run moves SSH back to loopback and
+leaves the browser out. An older checkout refuses `--instance` (`unknown option`), and your
+default devbox only gets `devbox-status-gate`, which `verify` checks for, from that re-run.
 
 From that root-owned, approved checkout, plan, dry-run, install, and verify:
 
@@ -426,7 +428,9 @@ this key only, no agent forwarding.
 `status --json` is the same schema-versioned document as `devbox-session status --json`
 ([docs/13](13-multi-channel-multi-agent.md#agent-status-board)): agent labels, git state,
 branch names, worktree paths, turn holders, and an activity label (`base` always reads
-`auto` through the gate). It never contains terminal contents. An unknown project prints
+`auto` through the gate). Check each row's `missing` and `error` first: when either is
+true, that row's git facts and turn are placeholders, not facts. It never contains terminal
+contents. An unknown project prints
 `ERROR: unknown project: <name>`, so the key can tell which project names exist.
 
 Now prove the door is narrow. Each of these must print `devbox-status-gate: denied` and

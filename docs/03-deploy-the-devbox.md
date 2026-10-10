@@ -86,8 +86,9 @@ fully separate devbox next to your first — for example, one for a bot's agents
 dev-only credentials ([docs/14](14-let-a-bot-manage-your-devbox.md)). If your devbox was
 installed from a release older than v1.8.0, first move `/opt/devbox-anywhere` to the
 approved v1.8.0 commit and re-run the default installer from it
-([docs/00](00-agent-guided-install.md) steps 1 and 3): an older checkout refuses
-`--instance`. Then, from that approved checkout:
+([docs/00](00-agent-guided-install.md) steps 1 and 3) with the same flags you first
+installed with (for example `--expose-ssh` or `--with-browser`; the installer does not
+remember them): an older checkout refuses `--instance`. Then, from that approved checkout:
 
 ```bash
 cd /opt/devbox-anywhere
@@ -123,7 +124,9 @@ What changes for an instance named `NAME`:
   port instead of `2222` ([docs/05](05-connect-from-any-device.md)). Once anything you do
   not fully trust runs in the instance, edit its files from inside it as `coder` (see
   [docs/14 step 3](14-let-a-bot-manage-your-devbox.md#3-add-the-gate-line)), not as host
-  root through `/data/devbox-NAME/...`, where a planted symlink would be followed.
+  root through `/data/devbox-NAME/...`, where a planted symlink would be followed. The
+  same applies to the default devbox's `/data/devbox/...` once agents run in it: add keys
+  with the in-container append in [docs/05](05-connect-from-any-device.md).
 - **Without `--instance` nothing changes:** the default install, its paths, and its ports
   are exactly as before. Upgrade an instance by re-running the installer with the same
   flags.

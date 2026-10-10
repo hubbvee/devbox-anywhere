@@ -177,7 +177,11 @@ always parses. The table and `list` print printable ASCII only (anything else be
 so a name holding terminal escape sequences cannot reach your terminal. The base branch is
 `DEVBOX_STATUS_BASE`, else the repo's `main` then `master`. Unknown project fails closed; a
 worktree that has vanished from disk is reported `"missing": true`, and one git cannot read
-`"error": true` — never a crash, and the other agents are still reported. Status is
+`"error": true` — never a crash, and the other agents are still reported. In such a row
+`dirty`, `ahead`, `behind`, `merged`, `new` and `turn` were never read: they are
+placeholders (`false`, `0`, `"free"` or `"unknown"`), not facts, so a consumer must check
+`missing` and `error` before reading any other field of a row (`reapable` is always `false`
+there). Status is
 read-only: it never takes git's optional index lock, so polling it cannot make an agent's own
 `git add` or `commit` fail.
 
