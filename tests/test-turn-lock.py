@@ -8,8 +8,12 @@ sandbox boundary.
 """
 from __future__ import annotations
 
+import atexit
+import hashlib
 import os
 import pathlib
+import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -27,11 +31,18 @@ def run(*args: str, state: pathlib.Path, holder: str | None = None, ttl: str | N
     return subprocess.run(["bash", str(TOOL), *args], env=env, capture_output=True, text=True)
 
 
+def scratch_dir(prefix: str) -> pathlib.Path:
+    # Removed at exit, green or red (the mutation suite turns this test red often).
+    path = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
+
+
 assert TOOL.is_file(), "scripts/devbox-turn must exist"
 
-state = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-"))
+state = scratch_dir("devbox-turn-")
 # Worktrees must be real directories; `take` refuses a path that does not exist.
-wt_root = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-wt-"))
+wt_root = scratch_dir("devbox-turn-wt-")
 WT = str(wt_root / "webapp-api"); pathlib.Path(WT).mkdir()
 WT2 = str(wt_root / "webapp-web"); pathlib.Path(WT2).mkdir()
 
@@ -77,7 +88,7 @@ assert "free" in run("status", WT, state=state).stdout.lower()
 assert run("take", WT, state=state, holder="carol").returncode == 0
 
 # stale lock: with a tiny TTL, an idle lock is reclaimable by a new holder.
-stale = pathlib.Path(tempfile.mkdtemp(prefix="devbox-turn-stale-"))
+stale = scratch_dir("devbox-turn-stale-")
 assert run("take", WT, state=stale, holder="alice", ttl="1").returncode == 0
 time.sleep(2)
 r = run("take", WT, state=stale, holder="bob", ttl="1")
@@ -87,6 +98,32 @@ assert "bob" in run("status", WT, state=stale, ttl="1").stdout, "reclaimer becom
 # path-unsafe / empty worktree arg fails closed.
 assert run("take", "", state=state, holder="x").returncode != 0
 assert run("status", state=state).returncode != 0
+
+# status is read-only (it never creates the state dir); take creates it owner-only, because every
+# status call -- including the read-only status gate's -- reads the lock files.
+inj_state = scratch_dir("devbox-turn-inj-") / "state"
+r = run("status", WT, state=inj_state)
+assert r.returncode == 0 and "free" in r.stdout and not inj_state.exists(), "turn_status_read_only"
+assert run("take", WT, state=inj_state, holder="bob").returncode == 0
+assert stat.S_IMODE(inj_state.stat().st_mode) == 0o700, f"turn_state_owner_only:{oct(inj_state.stat().st_mode)}"
+
+# The lock's ts file is DATA. bash evaluates a variable's value inside $(( )) as an expression,
+# array-subscript command substitutions included, so it must be checked before any arithmetic.
+# Unparsable (or octal-looking) timestamps read as a held, STALE lock -- never a crash, never code.
+# Over 18 digits is unparsable too: bash arithmetic wraps at 2^64, and a 20-digit ts that wraps
+# to a far-future time would give a negative age, a lock that never goes stale.
+ld = inj_state / hashlib.sha256(WT.encode()).hexdigest()
+canary = inj_state.parent / "canary"
+for payload in (f"SECONDS[$(touch {canary})]", f"a[$(touch {canary})]+1", "x y", "", "09", "1" * 40,
+                "23058430092136939520"):
+    (ld / "ts").write_text(payload)
+    r = run("status", WT, state=inj_state)
+    assert not canary.exists(), f"turn_ts_not_evaluated:{payload!r}"
+    assert r.returncode == 0 and r.stdout.startswith(f"held (STALE, reclaimable): {WT} by bob, age="), \
+        f"turn_ts_not_evaluated:{payload!r}:{r.stdout!r}:{r.stderr!r}"
+    assert run("take", WT, state=inj_state, holder="carol").returncode == 0, f"turn_ts_stale_reclaimable:{payload!r}"
+    assert not canary.exists(), f"turn_ts_not_evaluated:take:{payload!r}"
+    (ld / "holder").write_text("bob")
 
 # The tool documents itself as advisory, not a security boundary.
 text = TOOL.read_text().lower()

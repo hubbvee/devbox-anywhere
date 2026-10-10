@@ -2,7 +2,9 @@
 # Nightly backup of project data, SSH, secrets, and the Hermes Agent home.
 # Runs on the VPS HOST (via cron), independent of the container lifecycle, so it survives
 # image rebuilds. Finds the container by the STABLE Coolify label so it keeps working
-# after delete+recreate. Plain docker compose: swap the filter for  -f name=devbox
+# after delete+recreate. Plain docker compose: swap the filter for  -f name=^devbox$
+# (anchored: a bare name=devbox also matches devbox-browser and named instances; for an
+# `install-devbox --instance NAME` box use  -f name=^devbox-NAME$  and its own BACKUP_DIR).
 #
 # Install on the host:
 #   install -d -m 0700 "$HOME/devbox-backups"

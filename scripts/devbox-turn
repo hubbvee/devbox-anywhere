@@ -50,11 +50,20 @@ lock_dir_for() {
 read_holder() { [ -f "$1/holder" ] && cat "$1/holder" || printf ''; }
 read_ts()     { [ -f "$1/ts" ] && cat "$1/ts" || printf '0'; }
 
+# Age in seconds of a lock, or "" when its timestamp is not plain decimal digits. The ts file
+# is DATA: it is checked before any arithmetic (bash evaluates a variable's value inside
+# $(( )) as an expression, array subscripts and command substitutions included), and read
+# as base 10 so a leading zero is never octal.
+lock_age() {
+  ts=$(read_ts "$1")
+  case "$ts" in ''|*[!0-9]*) return 0 ;; esac
+  [ "${#ts}" -le 18 ] || return 0
+  printf '%s' "$(( $(now) - 10#$ts ))"
+}
+
 is_stale() {
-  ld=$1
-  ts=$(read_ts "$ld")
-  case "$ts" in ''|*[!0-9]*) return 0 ;; esac  # unparsable timestamp = stale
-  age=$(( $(now) - ts ))
+  age=$(lock_age "$1")
+  [ -n "$age" ] || return 0  # unparsable timestamp = stale
   [ "$age" -ge "$TTL" ]
 }
 
@@ -69,10 +78,11 @@ cmd=${1:-}
 shift 2>/dev/null || true
 wt=${1:-}
 
-mkdir -p "$STATE"
-
 case "$cmd" in
   take)
+    # Created owner-only: the lock files are read by every status call (including the
+    # read-only status gate), so nobody else may plant or edit them.
+    [ -d "$STATE" ] || (umask 077 && mkdir -p "$STATE")
     # A turn only makes sense for a real checkout. Refuse a worktree path that does not
     # exist, so callers can't lock a typo'd or not-yet-created path (fail closed).
     [ -d "$wt" ] || die "worktree does not exist: $wt"
@@ -114,10 +124,9 @@ case "$cmd" in
       exit 0
     fi
     cur=$(read_holder "$ld")
-    ts=$(read_ts "$ld")
-    age=$(( $(now) - ts ))
+    age=$(lock_age "$ld")
     if is_stale "$ld"; then
-      printf 'held (STALE, reclaimable): %s by %s, age=%ss\n' "$wt" "${cur:-unknown}" "$age"
+      printf 'held (STALE, reclaimable): %s by %s, age=%ss\n' "$wt" "${cur:-unknown}" "${age:-?}"
     else
       printf 'held: %s by %s, age=%ss\n' "$wt" "${cur:-unknown}" "$age"
     fi

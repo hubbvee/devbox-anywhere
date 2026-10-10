@@ -15,7 +15,9 @@ set -euo pipefail
 
 # Find the devbox container by its STABLE label. With Coolify, resourceName tracks the
 # app NAME and survives delete+recreate rebuilds (uuids don't). Plain docker compose:
-# use the fixed container name instead:  cid=$(docker ps -q -f name=devbox | head -1)
+# use the fixed container name instead:  cid=$(docker ps -q -f name=^devbox$ | head -1)
+# (anchored: a bare name=devbox also matches devbox-browser and named instances; for an
+# `install-devbox --instance NAME` box use  -f name=^devbox-NAME$ ).
 cid=$(docker ps -q -f label=coolify.resourceName=devbox | head -1)
 if [ -z "$cid" ]; then
   echo "devbox container is not running" >&2

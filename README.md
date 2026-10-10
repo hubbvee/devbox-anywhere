@@ -53,6 +53,43 @@ shows a dry-run, keeps services loopback-only by default, asks before privileged
 changes, builds the Compose stack, installs helpers, and verifies the result. It does not
 use a blind `curl | sudo bash` path or print generated credentials.
 
+## New in v1.8.0: a separate devbox for your bot, with a read-only door
+
+- **Run a second, isolated devbox** — `install-devbox --instance NAME --web-port N
+  --ssh-port N` (plus `--browser-port N` with `--with-browser`) creates container
+  `devbox-NAME` in Compose project `devbox-NAME`, with its own data root
+  (`/data/devbox-NAME`), logins, keys, and sessions. Ports are loopback-only by default,
+  validated, and refused if already in use; the installer never adopts a container it did
+  not create. The harness takes the same flags: `plan --instance NAME --web-port N
+  --ssh-port N`, and `preflight`/`verify`/`diagnose --instance NAME`. Without
+  `--instance` nothing changes. See
+  [docs/03](docs/03-deploy-the-devbox.md#running-a-second-instance).
+- **A read-only door for bots** — `devbox-status-gate` is installed with the other
+  helpers (and checked by `verify`) but does nothing until a key uses it. One
+  `restrict,command=...` line in `authorized_keys` lets that key ask only for `version`,
+  `list`, or `status <project> [--json]`; everything else is denied (exit 126) and logged
+  inside the instance. Revoke = delete the line. It limits what the bot's key can do to
+  the instance; it does not protect the bot or you from a compromised instance. See
+  [docs/14](docs/14-let-a-bot-manage-your-devbox.md).
+- **Let a bot manage coding work while you keep control** —
+  [docs/14](docs/14-let-a-bot-manage-your-devbox.md): a separate instance with dev-only
+  credentials, your own bridge for writes, human gates, independent verification, a
+  staged autonomy ladder, and a threat model.
+- **Upgrading:** to add an instance to an existing box, first move `/opt/devbox-anywhere`
+  to the approved v1.8.0 commit and re-run the default installer with the same flags you
+  first installed with, such as `--expose-ssh` or `--with-browser`
+  ([docs/14 step 1](docs/14-let-a-bot-manage-your-devbox.md#1-create-the-bots-instance)).
+- **Fixed:** the status board now proves an agent's tmux window exists before reading it.
+  An agent with no window reads `unknown` instead of borrowing the session's main shell
+  state; a window it cannot prove (a duplicated window name, or tmux output it cannot
+  parse, such as a newline inside a window name) also reads `unknown` and is never
+  `(reapable)`.
+- **Fixed:** a split window reads `working` when any of its panes runs the agent, not only
+  the selected one. A turn the board cannot read exactly reads `unknown`, never `free`.
+  `status` no longer takes git's index lock (polling could make an agent's `git add` fail),
+  a worktree git cannot read shows `ERROR` instead of hiding the whole board, `--json`
+  escapes every control byte, and the table and `list` print printable ASCII only.
+
 ## New in v1.7.0: agent status board
 
 - **Every agent on a project, at a glance** — `devbox-session status <project>` shows each
@@ -61,8 +98,11 @@ use a blind `curl | sudo bash` path or print generated credentials.
   activity **heuristic** (`working | idle | blocked | unknown`). Add `--json` for a
   schema-versioned document that scripts and agents can read.
 - **Safe cleanup** — an agent is marked `(reapable)` only when it is merged, clean, the turn
-  is free, and nothing is running in its window. A just-created agent reads `new`, never
-  `merged`. Unknown or missing state fails closed: no guessing, never reapable.
+  is free, and its window is not `working`. A just-created agent reads `new`, never
+  `merged`. Activity is never guessed: it reads `unknown` when it cannot be read. An agent
+  with no tmux session or no window of its own reads `unknown` and can still be reapable,
+  because nothing can be running there. A missing worktree, an unknown fork point, or a
+  window that may exist but cannot be proven (since v1.8.0) is never reapable.
 - **No migration** — existing registries keep working. See
   [docs/13](docs/13-multi-channel-multi-agent.md).
 
@@ -198,14 +238,17 @@ installer-bearing release.
 13. **[Multi-channel sessions with multiple agents](docs/13-multi-channel-multi-agent.md)** —
     one project = one tmux session reachable from any channel; multiple agents in parallel,
     each with its own worktree + branch and a per-worktree one-writer turn-lock.
+14. **[Let a bot manage your devbox](docs/14-let-a-bot-manage-your-devbox.md)** — a
+    separate instance with dev-only credentials, a read-only status gate, your own bridge
+    for writes, and human gates on everything that matters.
 
 ## Repo layout
 
 | Path | What |
 | --- | --- |
-| `docs/00–13` | Agent-guided install plus the full guide in build order |
+| `docs/00–14` | Agent-guided install plus the full guide in build order |
 | `stack/` | Dockerfile, entrypoint, tmux/sshd/VS Code configs, compose alternative, `devbox-browser-check` |
-| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-session`, `devbox-turn`, `devbox-worktree`, tmux wrapper, backup cron |
+| `scripts/` | Installer, agent harness, `devbox`, `devbox-attach`, `devbox-relink`, `devbox-session`, `devbox-status-gate`, `devbox-turn`, `devbox-worktree`, tmux wrapper, backup cron |
 | `skills/devbox-anywhere/` | Hermes umbrella skill plus eight operational and security references |
 | `clients/` | Your Mac: `devbox()` + `2dev` + `devshot` zsh functions, DevboxDrop watcher |
 | `templates/` | `main.env` and per-project `.env.op` examples |

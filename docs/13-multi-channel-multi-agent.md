@@ -63,6 +63,10 @@ executable. Run them from any shell in the devbox.
   (so `hermes gateway install` does not). See `docs/10-telegram-project-topics.md` for the full
   gateway example.
 
+The installer also places `devbox-status-gate` beside them: a read-only forced command for a
+bot's SSH key that answers only `version`, `list`, and `status <project> [--json]`, and is
+inert until an `authorized_keys` line uses it. See `docs/14-let-a-bot-manage-your-devbox.md`.
+
 ## Naming convention
 
 Agent ids **must** be `<project>-<suffix>` (e.g. `webapp-api`, `webapp-web`) so any channel
@@ -119,12 +123,17 @@ Two kinds of signal, deliberately distinguished:
 - **Exact git/turn facts** — `clean|dirty`, `+ahead/-behind` vs the base branch, `merged`
   (the branch is an ancestor of base **and has moved past its fork point**), `new` (the
   branch still sits exactly where it was forked — no commits of its own yet), and the
-  `devbox-turn` holder. These are computed from git and the lock; trust them. The state
+  `devbox-turn` holder. These are computed from git and the lock; trust them. A turn the
+  board cannot read exactly — `devbox-turn` failing, a damaged lock, or a holder name that is
+  not plain letters, digits and `._@+:-` (or is literally `free`) — reads `unknown`, never
+  `free`, so that agent is never `(reapable)`; the default holder `user@host` is fine. The state
   column shows every fact that applies, so dirt is never hidden: a fresh branch with
   uncommitted changes reads `new+dirty` and a merged one reads `merged+dirty`. `(reapable)`
-  = `merged && clean && turn free && activity != working` — safe to remove. A `new` branch
-  is **never** `merged` or `reapable`, so a just-created (possibly live) agent is never
-  flagged for cleanup.
+  = `merged && clean && turn free && activity != working`, and **never** while a window
+  bearing the agent's name may exist but cannot be proven (see activity below). A `new`
+  branch is **never** `merged` or `reapable`, so a just-created (possibly live) agent is
+  never flagged for cleanup. A worktree missing from disk is never `reapable` either, nor
+  is a registered directory git cannot read (shown `ERROR`, `"error": true`).
 
   How `new` is detected: for a worktree created by this version, `devbox-worktree` records
   the fork point (the base tip at creation) as a 4th registry column, and `new` means
@@ -135,11 +144,26 @@ Two kinds of signal, deliberately distinguished:
   agent is then **never** reported `reapable`, erring toward keeping it rather than reaping a
   branch we can't judge. New worktrees get the fork column automatically; no migration of an
   existing registry is required.
-- **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the tmux pane
+- **Activity is a HEURISTIC** — `working|blocked|idle`, inferred from the agent's tmux window
   (`working` = a non-shell foreground command; `idle` = a shell prompt; `blocked` = a known
-  waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). When the
-  pane can't be read it is `unknown` — never guessed. `--json` marks this with
-  `"activity_confidence":"heuristic"`. Do not gate irreversible actions on activity alone.
+  waiting-for-input prompt that has stalled past `DEVBOX_STATUS_STALE`, default 60s). A window
+  split into several panes reads `working` as soon as **any** pane runs a non-shell command,
+  even one that is not the selected pane. When the window can't be read it is `unknown` —
+  never guessed. The board first proves the agent's
+  window exists — exactly one window in the project's session whose name is exactly the
+  agent id — and reads only that window, so it never borrows the state of the session's main
+  shell. Two kinds of `unknown` follow, and they differ for cleanup:
+  - **Provably nothing there** — no tmux session for the project, or no window with the
+    agent's name. Activity is `unknown`, but nothing can be running there, so the agent can
+    still be `(reapable)` when it is merged, clean, and the turn is free.
+  - **A window that may exist but cannot be proven** — the agent's name appears on more than
+    one window, tmux's listing is inconsistent (for example, a raw newline inside a window
+    name or a pane command forges extra rows, in the window list or the pane list), or the
+    window vanishes mid-read. Activity is
+    `unknown` and the agent is **never** `(reapable)`.
+
+  `--json` marks activity with `"activity_confidence":"heuristic"`. Do not gate
+  irreversible actions on activity alone.
   **Known limit:** `working` means *any* non-shell foreground process, so an agent CLI
   (claude/codex) sitting idle at its own prompt still reads `working` — its process is always
   in the foreground. For the board's main use case that is usually what you want (`working`
@@ -147,14 +171,29 @@ Two kinds of signal, deliberately distinguished:
   producing output. Treat `working` as "occupied", not "busy".
 
 `--json` emits a schema-versioned document (`schema_version: 1`) with one object per agent;
-values are JSON-escaped and no secrets appear. The base branch is `DEVBOX_STATUS_BASE`, else
-the repo's `main` then `master`. Unknown project fails closed; a worktree that has vanished
-from disk is reported `"missing": true`, never a crash.
+no secrets appear. Every value is JSON-escaped: backslash and quote, every control byte as
+`\u00XX`, and the bytes of a value that is not valid UTF-8 as `\u00XX` too, so the document
+always parses. The table and `list` print printable ASCII only (anything else becomes `?`),
+so a name holding terminal escape sequences cannot reach your terminal. The base branch is
+`DEVBOX_STATUS_BASE`, else the repo's `main` then `master`. Unknown project fails closed; a
+worktree that has vanished from disk is reported `"missing": true`, and one git cannot read
+`"error": true` — never a crash, and the other agents are still reported. In such a row
+`dirty`, `ahead`, `behind`, `merged`, `new` and `turn` were never read: they are
+placeholders (`false`, `0`, `"free"` or `"unknown"`), not facts, so a consumer must check
+`missing` and `error` before reading any other field of a row (`reapable` is always `false`
+there). Status is
+read-only: it never takes git's optional index lock, so polling it cannot make an agent's own
+`git add` or `commit` fail.
 
 **Reap workflow:** an agent shown `(reapable)` is merged, clean, unheld, and not actively
 running — tear it down with `devbox-worktree remove <project> <agent>` (still refuses a dirty
-tree without `--force`). An actively-`working` agent is never `(reapable)`, so following this
-workflow cannot delete a live agent's worktree.
+tree without `--force`). An agent whose window reads `working` is never `(reapable)`. The
+board only sees the tmux server its own environment points at, though: if tmux is not
+installed, if the agents run on a server it does not reach (a `-L` socket, or a
+`TMUX_TMPDIR` the caller does not share — the read-only status gate of
+[docs/14](14-let-a-bot-manage-your-devbox.md) never shares it), or if an agent runs outside
+its named window, activity is `unknown` and a live agent can read `(reapable)`. In those
+setups, look before you reap.
 
 ## Dependency policy
 

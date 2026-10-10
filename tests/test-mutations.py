@@ -30,6 +30,7 @@ BASELINES = (
     ("harness", ["python3", "tests/test-agent-harness.py"]),
     ("operations", ["python3", "tests/test-agent-harness-operations.py"]),
     ("inventory", ["python3", "tests/test-runner-inventory.py"]),
+    ("instance", ["python3", "tests/test-install-devbox-instance.py"]),
 )
 for name, command in BASELINES:
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120)
@@ -61,34 +62,93 @@ def mutated(
         )
 
 
+# The tmux activity probe's window-existence proof, verbatim. Reverting it to the old name-targeted
+# probe (display-message "=S:W" silently falls back to the session's current window when W is
+# missing) must turn the fake-tmux test red: an agent with no window would report another's activity.
+ACTIVITY_WINDOW_PROOF = r'''        wins=$(tmux_rows "$1" "#{window_id}${tab}#{window_name}") || { printf 'unknown held'; return; }
+        wid=""; hits=0
+        while LC_ALL=C IFS= read -r wl; do
+          case "$wl" in @*"$tab"*) : ;; *) printf 'unknown held'; return ;; esac
+          [ "${wl#*"$tab"}" = "$2" ] || continue
+          hits=$((hits + 1)); wid=${wl%%"$tab"*}
+        done <<< "$wins"
+        [ "$hits" -ne 0 ] || { printf 'unknown'; return; }
+        [ "$hits" -eq 1 ] || { printf 'unknown held'; return; }
+        case "${wid#@}" in ''|*[!0-9]*) printf 'unknown held'; return ;; esac
+        # Facts for that id only (no names in this format). A window gone since the listing => held.
+        meta=$(tmux_rows "$1" "#{window_id}${tab}#{window_activity}${tab}#{pane_current_command}") || { printf 'unknown held'; return; }
+        mrow=""; mn=0
+        while LC_ALL=C IFS= read -r wl; do
+          if [ "${wl%%"$tab"*}" = "$wid" ]; then mn=$((mn + 1)); mrow=${wl#*"$tab"}; fi
+        done <<< "$meta"
+        [ "$mn" -eq 1 ] || { printf 'unknown held'; return; }
+        awin=${mrow%%"$tab"*}
+        cmd=${mrow#*"$tab"}
+        [ -n "$cmd" ] || { printf 'unknown held'; return; }
+        # Every pane of that window, not only the active one: an agent CLI keeps running in a
+        # pane that is not selected (the facts above and capture-pane below read the ACTIVE pane
+        # only). Count-prefixed and line-counted like tmux_rows, since a pane command may hold
+        # raw newlines; an unreadable or inconsistent listing => held. With two or more panes,
+        # any non-shell command in any of them => working.
+        panes=$(tmux list-panes -t "$wid" -F "#{window_panes}${tab}#{pane_current_command}" 2>/dev/null && printf '.') || { printf 'unknown held'; return; }
+        panes=${panes%.}
+        pn=${panes%%"$tab"*}
+        case "$pn" in ''|*[!0-9]*) printf 'unknown held'; return ;; esac
+        [ "$pn" -ge 1 ] && [ "$(printf '%s' "$panes" | grep -c '')" -eq "$pn" ] || { printf 'unknown held'; return; }
+        pi=0; pbusy=""
+        while [ "$pi" -lt "$pn" ] && LC_ALL=C IFS= read -r pl; do
+          pi=$((pi + 1))
+          case "$pl" in *"$tab"?*) : ;; *) printf 'unknown held'; return ;; esac
+          case "${pl#*"$tab"}" in sh|bash|dash|zsh|-sh|-bash|-zsh|fish|tmux) : ;; *) pbusy=1 ;; esac
+        done <<< "$panes"
+        [ "$pi" -eq "$pn" ] || { printf 'unknown held'; return; }
+        if [ "$pn" -gt 1 ] && [ -n "$pbusy" ]; then printf 'working'; return; fi
+        now=$(date +%s 2>/dev/null)
+        age=""; case "$awin$now" in *[!0-9]*) : ;; *) [ -n "$awin" ] && [ -n "$now" ] && age=$((now - awin)) ;; esac
+        # The pane read must itself succeed (a window that vanished since the listing => held);
+        # the trailing "." keeps the blank rows below the cursor that $(...) would trim.
+        pane=$(tmux capture-pane -p -t "$wid" 2>/dev/null && printf '.') || { printf 'unknown held'; return; }
+        last=$(printf '%s' "${pane%.}" | grep -n '[^[:space:]]' | tail -n1 | cut -d: -f2-)
+'''
+ACTIVITY_NAME_TARGET = r'''        cmd=$(tmux display-message -p -t "=$1:$2" '#{pane_current_command}' 2>/dev/null) || { printf 'unknown'; return; }
+        awin=$(tmux display-message -p -t "=$1:$2" '#{window_activity}' 2>/dev/null)
+        now=$(date +%s 2>/dev/null)
+        age=""; case "$awin$now" in *[!0-9]*) : ;; *) [ -n "$awin" ] && [ -n "$now" ] && age=$((now - awin)) ;; esac
+        last=$(tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n '[^[:space:]]' | tail -n1 | cut -d: -f2-)
+'''
+
 CASES = [
     ("compose-extra-port", "stack/docker-compose.yml", "before public exposure\n    volumes:\n", 'before public exposure\n      - "0.0.0.0:9999:8080"\n    volumes:\n', ["python3", "tests/test-compose-model.py"], "ports must contain exactly"),
     ("compose-password-override", "stack/docker-compose.yml", "in .env}\n    ports:\n", 'in .env}\n      - "PASSWORD=unsafe-override"\n    ports:\n', ["python3", "tests/test-compose-model.py"], "environment must contain exactly"),
     ("compose-extra-mount", "stack/docker-compose.yml", "/ssh:/home/coder/.ssh\n", "/ssh:/home/coder/.ssh\n      - /tmp:/tmp\n", ["python3", "tests/test-compose-model.py"], "volume wiring/count drifted"),
     ("compose-host-network", "stack/docker-compose.yml", "    environment:\n      # Web login password", "    network_mode: host\n    environment:\n      # Web login password", ["python3", "tests/test-compose-model.py"], "devbox service keys drifted"),
     ("compose-extra-service", "stack/docker-compose.yml", "services:\n", "services:\n  attacker:\n    image: alpine\n", ["python3", "tests/test-compose-model.py"], "service set drifted"),
-    ("browser-public-bind", "stack/docker-compose.yml", "${DEVBOX_BROWSER_BIND:-127.0.0.1}:8081:3000", "0.0.0.0:8081:3000", ["python3", "tests/test-browser-service.py"], "browser noVNC must bind"),
+    ("browser-public-bind", "stack/docker-compose.yml", "${DEVBOX_BROWSER_BIND:-127.0.0.1}:${DEVBOX_BROWSER_PORT:-8081}:3000", "0.0.0.0:${DEVBOX_BROWSER_PORT:-8081}:3000", ["python3", "tests/test-browser-service.py"], "browser noVNC must bind"),
     ("browser-literal-password", "stack/docker-compose.yml", "PASSWORD=${DEVBOX_BROWSER_PASSWORD:?set DEVBOX_BROWSER_PASSWORD in .env}", "PASSWORD=hardcoded-secret", ["python3", "tests/test-browser-service.py"], "browser password"),
     ("compose-seed-drops-required-var", "tests/test-compose-model.py", '    "DEVBOX_BROWSER_PASSWORD=TEST_ONLY_NOT_A_SECRET\\n"\n', "", ["python3", "tests/test-compose-model.py"], "seed_missing_required_var:DEVBOX_BROWSER_PASSWORD"),
     ("harness-op-umask-host-inherited", "tests/test-agent-harness-operations.py", "os.umask(0o022)", "os.umask(0o002)", ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
     ("browser-profile-removed", "stack/docker-compose.yml", "    profiles:\n      - browser\n", "", ["python3", "tests/test-browser-service.py"], "browser service must be gated"),
-    ("installer-omit-devbox", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"', 'helpers="devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
-    ("installer-omit-daemon", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"', 'helpers="devbox devbox-relink devbox-session devbox-turn devbox-worktree"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
-    ("installer-omit-relink", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"', 'helpers="devbox devbox-daemon devbox-session devbox-turn devbox-worktree"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
+    ("installer-omit-devbox", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', 'helpers="devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
+    ("installer-omit-daemon", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', 'helpers="devbox devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
+    ("installer-omit-relink", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', 'helpers="devbox devbox-daemon devbox-session devbox-turn devbox-worktree devbox-status-gate"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
     ("installer-browser-profile-drop", "scripts/install-devbox", "  compose+=(--profile browser)", "  :", ["python3", "tests/test-install-devbox-lifecycle.py"], "browser_profile_missing"),
     ("installer-browser-password-regate", "scripts/install-devbox", "$browser_pw_line\nEOF\n  unset password\n", "EOF\n  unset password\n", ["python3", "tests/test-install-devbox-lifecycle.py"], "default_install_missing_browser_password"),
-    ("installer-helper-order", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"', 'helpers="devbox-daemon devbox devbox-relink devbox-session devbox-turn devbox-worktree"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
-    ("harness-omit-session-helper", "scripts/devbox-anywhere", 'for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"):', 'for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-turn", "devbox-worktree"):', ["python3", "tests/test-agent-harness-operations.py"], "verify_check_ids"),
+    ("installer-helper-order", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', 'helpers="devbox-daemon devbox devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
+    ("harness-omit-session-helper", "scripts/devbox-anywhere", 'for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree", "devbox-status-gate"):', 'for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-turn", "devbox-worktree", "devbox-status-gate"):', ["python3", "tests/test-agent-harness-operations.py"], "verify_check_ids"),
+    ("installer-omit-status-gate", "scripts/install-devbox", 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree devbox-status-gate"', 'helpers="devbox devbox-daemon devbox-relink devbox-session devbox-turn devbox-worktree"', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
+    ("installer-source-omit-status-gate", "scripts/install-devbox", ' scripts/devbox-worktree scripts/devbox-status-gate; do', ' scripts/devbox-worktree; do', ["python3", "tests/test-source-trust.py"], "source_gate_symlink_rejected"),
+    ("harness-omit-status-gate-helper", "scripts/devbox-anywhere", 'for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree", "devbox-status-gate"):', 'for helper in ("devbox", "devbox-daemon", "devbox-relink", "devbox-session", "devbox-turn", "devbox-worktree"):', ["python3", "tests/test-agent-harness-operations.py"], "verify_check_ids"),
+    ("harness-missing-docker-omits-status-gate", "scripts/devbox-anywhere", '            ("helper.devbox-status-gate", "Docker is missing"),\n', '', ["python3", "tests/test-agent-harness-operations.py"], "verify_docker_missing_ids"),
     ("harness-wget-argv", "scripts/devbox-anywhere", '"/usr/bin/wget", "-q", "--spider", "http://127.0.0.1:8080/"', '"/usr/bin/true"', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
     ("harness-ssh-argv", "scripts/devbox-anywhere", '"/usr/bin/ssh-keyscan", "-T", "2", "-p", "22", "127.0.0.1"', '"/usr/bin/true"', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
     ("harness-http-forced-true", "scripts/devbox-anywhere", "http_ok = docker_ok([", "http_ok = True or docker_ok([", ["python3", "tests/test-agent-harness-operations.py"], "runtime_http_probe"),
     ("harness-ssh-forced-true", "scripts/devbox-anywhere", "ssh_ok = docker_ok([", "ssh_ok = True or docker_ok([", ["python3", "tests/test-agent-harness-operations.py"], "runtime_ssh_probe"),
-    ("harness-wrong-port", "scripts/devbox-anywhere", '"HostPort": "8080"', '"HostPort": "9999"', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
-    ("harness-wrong-mount", "scripts/devbox-anywhere", '("/data/devbox/project", "/home/coder/project")', '("/data/devbox/project-WRONG", "/home/coder/project")', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
+    ("harness-wrong-port", "scripts/devbox-anywhere", '"HostPort": web_port}', '"HostPort": "9999"}', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
+    ("harness-wrong-mount", "scripts/devbox-anywhere", '("project", "/home/coder/project")', '("project-WRONG", "/home/coder/project")', ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
     ("installer-context", "scripts/install-devbox", 'docker_cmd=("${compose_env[@]}" "$DOCKER" --context default)', 'docker_cmd=("${compose_env[@]}" "$DOCKER")', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_exact_argv"),
     ("installer-config", "scripts/install-devbox", 'compose_env=(env -i PATH="$SAFE_PATH" HOME=/root DOCKER_CONFIG="$DOCKER_CONFIG")', 'compose_env=(env -i PATH="$SAFE_PATH" HOME=/root)', ["python3", "tests/test-install-devbox-lifecycle.py"], "docker_config"),
-    ("installer-recovery-context", "scripts/install-devbox", "docker --context default logs devbox", "docker logs devbox", ["python3", "tests/test-install-devbox-lifecycle.py"], "recovery_docker_context"),
-    ("installer-status-context", "scripts/install-devbox", "docker --context default compose --env-file", "docker compose --env-file", ["python3", "tests/test-install-devbox-lifecycle.py"], "status_docker_context"),
+    ("installer-recovery-context", "scripts/install-devbox", "docker --context default logs $CONTAINER", "docker logs $CONTAINER", ["python3", "tests/test-install-devbox-lifecycle.py"], "recovery_docker_context"),
+    ("installer-status-context", "scripts/install-devbox", "docker --context default compose ${PROJECT:+-p $PROJECT }--env-file", "docker compose ${PROJECT:+-p $PROJECT }--env-file", ["python3", "tests/test-install-devbox-lifecycle.py"], "status_docker_context"),
     ("harness-context", "scripts/devbox-anywhere", 'return run([docker, "--context", "default", *arguments], clean=True)', "return run([docker, *arguments], clean=True)", ["python3", "tests/test-agent-harness-operations.py"], "runtime_exact_argv"),
     ("harness-config", "scripts/devbox-anywhere", '"DOCKER_CONFIG": DOCKER_CONFIG,', '"IGNORED_DOCKER_CONFIG": DOCKER_CONFIG,', ["python3", "tests/test-agent-harness-operations.py"], "runtime_docker_config"),
     ("json-option-reflection", "scripts/devbox-anywhere", 'safe_message = "unknown option"', "safe_message = message", ["python3", "tests/test-agent-harness.py"], "json_unknown_option_redaction"),
@@ -102,11 +162,19 @@ CASES = [
     ("worktree-dirty-remove", "scripts/devbox-worktree", 'die "worktree has uncommitted changes: $worktree (use --force to discard)"', 'true', ["python3", "tests/test-worktree-helper.py"], "dirty worktree must not be removed without --force"),
     ("worktree-convention-drop", "scripts/devbox-worktree", 'die "agent id must be \'${1}-<suffix>\': $2"', 'true', ["python3", "tests/test-worktree-helper.py"], "off-convention agent must be rejected"),
     ("worktree-postadd-ignore-failure", "scripts/devbox-worktree", 'exit "$hook_status"', 'true', ["python3", "tests/test-worktree-helper.py"], "a failing post-add hook must be surfaced"),
-    ("status-dirty-blind", "scripts/devbox-session", '[ -n "$(git -C "$worktree" status --porcelain 2>/dev/null)" ] && dirty=true', ':', ["python3", "tests/test-session-status.py"], "status_dirty_true"),
+    ("status-dirty-blind", "scripts/devbox-session", '[ -n "$porcelain" ] && dirty=true', ':', ["python3", "tests/test-session-status.py"], "status_dirty_true"),
     ("status-merged-blind", "scripts/devbox-session", 'if [ "$new" = false ] && git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', ':', ["python3", "tests/test-session-status.py"], "status_merged_true"),
     ("status-reapable-loosened", "scripts/devbox-session", 'if [ "$merged" = true ] && [ "$newness_known" = true ] && [ "$dirty" = false ] && [ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi', 'reapable=true', ["python3", "tests/test-session-status.py"], "status_reapable_false_when_dirty"),
     ("status-activity-fabricated", "scripts/devbox-session", '[ -n "$pcmd" ] || { printf \'unknown\'; return; }', ':', ["python3", "tests/test-session-status.py"], "act_unknown_on_empty_cmd"),
-    ('status-blocked-last-blank-line', 'scripts/devbox-session', 'tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n \'[^[:space:]]\' | tail -n1 | cut -d: -f2-', 'tmux capture-pane -p -t "=$1:$2" 2>/dev/null | grep -n \'\' | tail -n1 | cut -d: -f2-', ['python3', 'tests/test-session-activity-faketmux.py'], 'must read blocked'),
+    ('status-blocked-last-blank-line', 'scripts/devbox-session', 'last=$(printf \'%s\' "${pane%.}" | grep -n \'[^[:space:]]\' | tail -n1 | cut -d: -f2-)', 'last=$(printf \'%s\' "${pane%.}" | grep -n \'\' | tail -n1 | cut -d: -f2-)', ['python3', 'tests/test-session-activity-faketmux.py'], 'must read blocked'),
+    ('status-activity-window-existence-dropped', 'scripts/devbox-session', ACTIVITY_WINDOW_PROOF, ACTIVITY_NAME_TARGET, ['python3', 'tests/test-session-activity-faketmux.py'], 'no tmux window must read unknown'),
+    ('status-activity-name-prefix-match', 'scripts/devbox-session', '[ "${wl#*"$tab"}" = "$2" ] || continue', 'case "${wl#*"$tab"}" in "$2"*) : ;; *) continue ;; esac', ['python3', 'tests/test-session-activity-faketmux.py'], 'no tmux window must read unknown'),
+    ('status-activity-ambiguous-window-accepted', 'scripts/devbox-session', '[ "$hits" -eq 1 ] || { printf \'unknown held\'; return; }', '[ "$hits" -ge 1 ] || { printf \'unknown held\'; return; }', ['python3', 'tests/test-session-activity-faketmux.py'], 'ambiguous and must read unknown'),
+    ('status-activity-forged-window-row', 'scripts/devbox-session', '[ "$(printf \'%s\' "$_out" | grep -c \'\')" -eq "$_n" ] || return 1', ':', ['python3', 'tests/test-session-activity-faketmux.py'], 'newline-forged window row'),
+    ('status-activity-facts-row-ambiguous', 'scripts/devbox-session', '[ "$mn" -eq 1 ] || { printf \'unknown held\'; return; }', '[ "$mn" -ge 1 ] || { printf \'unknown held\'; return; }', ['python3', 'tests/test-session-activity-faketmux.py'], 'inconsistent facts listing'),
+    ('status-activity-empty-cmd-unheld', 'scripts/devbox-session', '[ -n "$cmd" ] || { printf \'unknown held\'; return; }', ':', ['python3', 'tests/test-session-activity-faketmux.py'], 'no readable command'),
+    ('status-activity-capture-failure-ignored', 'scripts/devbox-session', "pane=$(tmux capture-pane -p -t \"$wid\" 2>/dev/null && printf '.') || { printf 'unknown held'; return; }", "pane=$(tmux capture-pane -p -t \"$wid\" 2>/dev/null && printf '.') || pane=''", ['python3', 'tests/test-session-activity-faketmux.py'], 'vanished before capture'),
+    ('status-reapable-ignores-held-window', 'scripts/devbox-session', 'if [ "$held" = true ]; then reapable=false; fi', ':', ['python3', 'tests/test-session-activity-faketmux.py'], 'ambiguous window must never be reapable'),
     ('status-fresh-reads-merged', 'scripts/devbox-session', 'if [ "$new" = false ] && git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', 'if git -C "$worktree" merge-base --is-ancestor "$branch" "$b" 2>/dev/null; then merged=true; fi', ['python3', 'tests/test-session-status.py'], 'fresh_agent_not_merged'),
     ('status-reapable-includes-working', 'scripts/devbox-session', '[ "$turn" = free ] && [ "$activity" != working ]; then reapable=true; fi', '[ "$turn" = free ]; then reapable=true; fi', ['python3', 'tests/test-session-status.py'], 'reapable_excludes_working'),
     ('status-table-hides-dirty', 'scripts/devbox-session', 'elif [ "$merged" = true ] && [ "$dirty" = true ]; then gs="merged+dirty"', 'elif [ "$merged" = true ] && [ "$dirty" = true ]; then gs="merged"', ['python3', 'tests/test-session-status.py'], 'merged+dirty'),
@@ -123,7 +191,92 @@ CASES = [
     ("relink-probe-loader-line-reparsed", "scripts/devbox-anywhere", 'grep -E \'^relink[[:space:]]+"\\$HOME/[^"]*"[[:space:]]+"\\$HOME/[^"]*"\'', "grep -E '^[[:space:]]*relink '", ["python3", "tests/test-relink-targets-probe.py"], "must not parse the loader call"),
     ("relink-missing-dir-source-mkdir", "scripts/devbox-relink", 'mkdir -p "$HOME/.local/share/gh-config" "$HOME/.local/share/terminfo"', ':', ["python3", "tests/test-relink-targets-probe.py"], "must land in the persisted store"),
     ("relink-probe-absent-link-passes", "scripts/devbox-anywhere", 'if [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', 'if [ -e "$l" ] && [ ! -L "$l" ]; then printf \'DANGLING %s -> %s\\n\' "$l" "$t"; fi', ["python3", "tests/test-relink-targets-probe.py"], "an absent shipped link must be flagged"),
+    # Named instances (--instance): name allow-list, explicit project, port and container gates.
+    ("installer-instance-name-unvalidated", "scripts/install-devbox", 'matches "$INSTANCE" "$INSTANCE_RE" || die "--instance must match $INSTANCE_RE"', ":", ["python3", "tests/test-install-devbox-instance.py"], "instance_name_validation"),
+    ("installer-instance-reserved-allowed", "scripts/install-devbox", '[[ $INSTANCE != "$reserved" ]] || die "--instance name is reserved: $INSTANCE"', "true", ["python3", "tests/test-install-devbox-instance.py"], "instance_name_validation"),
+    ("installer-instance-default-port-allowed", "scripts/install-devbox", '[[ $port != "$reserved" ]] || die "port $port belongs to the default instance"', "true", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_validation"),
+    ("installer-port-flags-without-instance", "scripts/install-devbox", '|| die "--web-port, --ssh-port and --browser-port require --instance"', "|| :", ["python3", "tests/test-install-devbox-instance.py"], "port_flags_require_instance"),
+    ("installer-instance-implicit-project", "scripts/install-devbox", '  compose+=(-p "$PROJECT")\n', "  :\n", ["python3", "tests/test-install-devbox-instance.py"], "instance_docker_exact_argv"),
+    ("installer-instance-port-collision-ignored", "scripts/install-devbox", '|| die "host port $port is already in use"', "|| :", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_collision"),
+    ("installer-instance-container-hijack", "scripts/install-devbox", '|| die "container $listed_name exists but is not managed by Compose project $PROJECT; refusing to touch it"', "|| :", ["python3", "tests/test-install-devbox-instance.py"], "instance_container_hijack"),
+    ("installer-instance-port-format-unvalidated", "scripts/install-devbox", '      || die "ports must be decimal integers from 1024 to 65535"', "      || :", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_validation"),
+    ("installer-instance-ports-not-distinct", "scripts/install-devbox", '|| die "--web-port, --ssh-port and --browser-port must be distinct"', "|| :", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_validation"),
+    ("installer-instance-option-repeat-allowed", "scripts/install-devbox", 'once() { [[ -z $2 ]] || die "$1 may be given only once"; }', "once() { :; }", ["python3", "tests/test-install-devbox-instance.py"], "instance_option_repeated"),
+    ("installer-instance-owned-port-exemption-widened", "scripts/install-devbox", '[[ " $owned_ports " != *" $port "* ]] || continue', "[[ -z $owned_ports ]] || continue", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_collision:rerun_new_port"),
+    ("installer-instance-ss-fail-open", "scripts/install-devbox", 'listening=$(ss -Hltn) || die "could not list listening TCP ports"', "listening=$(ss -Hltn) || :", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_check_fail_closed"),
+    ("installer-instance-ss-short-line-skipped", "scripts/install-devbox", '((${#ss_fields[@]} >= 5)) && [[ ${ss_fields[0]} == LISTEN ]] || die "unexpected listening socket line from ss"', "[[ -n ${ss_fields[3]:-} ]] || continue", ["python3", "tests/test-install-devbox-instance.py"], "instance_port_check_fail_closed"),
+    ("installer-instance-container-list-fail-open", "scripts/install-devbox", '|| die "could not list existing containers"', "|| :", ["python3", "tests/test-install-devbox-instance.py"], "instance_container_list_fail_closed"),
+    ("installer-instance-foreign-project-adopted", "scripts/install-devbox", 'die "container $listed_name already belongs to Compose project $PROJECT; refusing to recreate it"', ":", ["python3", "tests/test-install-devbox-instance.py"], "instance_container_foreign_project"),
+    ("compose-instance-container-literal", "stack/docker-compose.yml", "    container_name: ${DEVBOX_CONTAINER:-devbox}\n", "    container_name: devbox\n", ["python3", "tests/test-compose-model.py"], "container name wiring drifted"),
+    ("harness-instance-name-unvalidated", "scripts/devbox-anywhere", "return re.fullmatch(INSTANCE_PATTERN, name) is not None and name not in RESERVED_INSTANCES", "return True", ["python3", "tests/test-agent-harness-operations.py"], "harness_instance_validation"),
+    ("harness-instance-project-label-ignored", "scripts/devbox-anywhere", "project_ok = project_result.returncode == 0 and project_result.stdout.strip() == target.project", "project_ok = True", ["python3", "tests/test-agent-harness-operations.py"], "harness_instance_project_label"),
+    ("harness-instance-state-identity-unchecked", "scripts/devbox-anywhere", 'if (settings["DEVBOX_INSTANCE"], settings["DEVBOX_PROJECT"]', 'if False and (settings["DEVBOX_INSTANCE"], settings["DEVBOX_PROJECT"]', ["python3", "tests/test-agent-harness-operations.py"], "harness_instance_state"),
+    ("harness-instance-state-ports-unchecked", "scripts/devbox-anywhere", 'if not valid_ports(settings["DEVBOX_WEB_PORT"], settings["DEVBOX_SSH_PORT"], settings.get("DEVBOX_BROWSER_PORT")):', "if False:", ["python3", "tests/test-agent-harness-operations.py"], "harness_instance_state"),
+    ("harness-plan-ports-unchecked", "scripts/devbox-anywhere", "if (browser_port is not None) != with_browser or not valid_ports(web_port, ssh_port, browser_port):", "if (browser_port is not None) != with_browser:", ["python3", "tests/test-agent-harness-operations.py"], "harness_plan_port_validation"),
+    ("harness-option-repeat-last-wins", "scripts/devbox-anywhere", 'parser.error(f"{option_string} may be given only once")', "pass", ["python3", "tests/test-agent-harness-operations.py"], "harness_option_repeated"),
+    ("runner-omit-instance", "tests/run.sh", "python3 tests/test-install-devbox-instance.py\n", "", ["python3", "tests/test-runner-inventory.py"], "runner_inventory_mismatch"),
     ("sshd-penalty-exempt-removed", "stack/config/devbox-sshd.conf", 'PerSourcePenaltyExemptList 127.0.0.1,::1', '# PerSourcePenaltyExemptList 127.0.0.1,::1', ["python3", "tests/test-ssh-penalty-exempt.py"], "PerSourcePenaltyExemptList"),
+    ("gate-charset-check-dropped", "scripts/devbox-status-gate", '  *[!A-Za-z0-9._\\ -]*) deny charset ;;\n', '', ["python3", "tests/test-status-gate.py"], "gate_deny_reason"),
+    ("gate-length-check-dropped", "scripts/devbox-status-gate", '[ "${#req}" -le 80 ] || deny length', ':', ["python3", "tests/test-status-gate.py"], "gate_deny_reason"),
+    ("gate-project-dash-dot-accepted", "scripts/devbox-status-gate", '    -*|.*) deny project ;;\n', '', ["python3", "tests/test-status-gate.py"], "gate_hostile_not_denied"),
+    ("gate-env-scrub-dropped", "scripts/devbox-status-gate", 'exec /usr/bin/env -i HOME=', 'exec /usr/bin/env HOME=', ["python3", "tests/test-status-gate.py"], "gate_env_scrubbed"),
+    ("gate-path-not-fixed", "scripts/devbox-status-gate", 'SAFE_PATH=/usr/bin:/bin\n', 'SAFE_PATH=$PATH\n', ["python3", "tests/test-status-gate.py"], "gate_fixed_path"),
+    ("gate-helper-via-path", "scripts/devbox-status-gate", 'session=$bindir/devbox-session', 'session=$(command -v devbox-session || true)', ["python3", "tests/test-status-gate.py"], "gate_allowed_exec"),
+    ("gate-symlink-helper-accepted", "scripts/devbox-status-gate", '  [ ! -L "$1" ] || return 1\n', '', ["python3", "tests/test-status-gate.py"], "gate_symlink_helper_denied"),
+    ("gate-shared-dir-accepted", "scripts/devbox-status-gate", 'owned_not_shared "$bindir" || deny helper', ':', ["python3", "tests/test-status-gate.py"], "gate_shared_dir_denied"),
+    ("gate-allow-log-fail-open", "scripts/devbox-status-gate", 'audit allow "$1" || deny log-failed', 'audit allow "$1" || true', ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed"),
+    ("gate-deny-echoes-request", "scripts/devbox-status-gate", "printf 'devbox-status-gate: denied\\n' >&2", "printf 'devbox-status-gate: denied: %s\\n' \"$req\" >&2", ["python3", "tests/test-status-gate.py"], "gate_deny_no_echo"),
+    ("gate-umask-loosened", "scripts/devbox-status-gate", 'umask 077\n', 'umask 022\n', ["python3", "tests/test-status-gate.py"], "gate_log_dir_mode"),
+    ("gate-log-chmod-dropped", "scripts/devbox-status-gate", '        chmod 600 "$log" 2>/dev/null && break\n', '        break\n', ["python3", "tests/test-status-gate.py"], "gate_log_mode_tightened"),
+    ("gate-log-rotation-dropped", "scripts/devbox-status-gate", 'mv -f -- "$log" "$log.1" 2>/dev/null && rotated=1', 'rotated=1', ["python3", "tests/test-status-gate.py"], "gate_log_rotated"),
+    ("gate-log-unsanitized", "scripts/devbox-status-gate", "shown=$(printf '%s' \"${req:0:200}\" | LC_ALL=C tr -c ' -~' '?')", 'shown=${req:0:200}', ["python3", "tests/test-status-gate.py"], "gate_log_sanitized"),
+    ("gate-eval-exec", "scripts/devbox-status-gate", 'exec /usr/bin/env -i HOME=', 'eval exec /usr/bin/env -i HOME=', ["python3", "tests/test-status-gate.py"], "gate_source_no_eval"),
+    ("gate-turn-trust-dropped", "scripts/devbox-status-gate", 'trusted_file "$bindir/devbox-turn" || deny helper', ':', ["python3", "tests/test-status-gate.py"], "gate_hostile_not_denied:symlinked-turn"),
+    ("gate-log-symlink-written-through", "scripts/devbox-status-gate", 'if [ ! -L "$log" ] && [ -f "$log" ] && [ -O "$log" ] && size=', 'if size=', ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed:symlinked-log"),
+    ("gate-stdin-open", "scripts/devbox-status-gate", '"$session" "$@" < /dev/null', '"$session" "$@"', ["python3", "tests/test-status-gate.py"], "gate_stdin_closed"),
+    ("gate-log-dir-shared-accepted", "scripts/devbox-status-gate", '  [ -z "$shared" ] || exit 1\n', '', ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed:group-writable-log-dir"),
+    ("gate-log-dir-symlink-accepted", "scripts/devbox-status-gate", '[ ! -L "$dir" ] || exit 1', ':', ["python3", "tests/test-status-gate.py"], "gate_log_dir_symlink_refused"),
+    ("gate-home-unchecked", "scripts/devbox-status-gate", 'safe_path "${HOME:-}" && [ -d "$HOME" ] || deny home', ':', ["python3", "tests/test-status-gate.py"], "gate_home_checked:relative"),
+    ("gate-own-path-unfixed", "scripts/devbox-status-gate", 'PATH=$SAFE_PATH\nexport PATH\n', '', ["python3", "tests/test-status-gate.py"], "gate_own_path_fixed"),
+    ("gate-dot-segment-accepted", "scripts/devbox-status-gate", '*[!A-Za-z0-9._/-]*|*/../*|*/..|*/./*|*/.) return 1 ;;', '*[!A-Za-z0-9._/-]*) return 1 ;;', ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed:dot-segment-xdg"),
+    ("gate-rotate-target-unchecked", "scripts/devbox-status-gate", 'elif [ ! -L "$log.1" ] && { [ ! -e "$log.1" ] || { [ -f "$log.1" ] && [ -O "$log.1" ]; }; }; then', 'else', ["python3", "tests/test-status-gate.py"], "gate_log_rotate_target_refused:symlink-to-dir"),
+    ("gate-rotation-unlocked", "scripts/devbox-status-gate", 'if mkdir "$lock" 2>/dev/null; then', 'if :; then', ["python3", "tests/test-status-gate.py"], "gate_log_rotation_concurrent"),
+    ("gate-project-length-uncapped", "scripts/devbox-status-gate", '[ "${#project}" -le 64 ] || deny project', ':', ["python3", "tests/test-status-gate.py"], "gate_hostile_not_denied:'status " + "a" * 33),
+    ("gate-locale-not-bytes", "scripts/devbox-status-gate", 'LC_ALL=C\nexport LC_ALL\n', '', ["python3", "tests/test-status-gate.py"], "gate_byte_locale"),
+    ("gate-client-unsanitized", "scripts/devbox-status-gate", "client=$(printf '%s' \"${client:0:64}\" | LC_ALL=C tr -c '0-9A-Fa-f.:' '?')", 'client=${client:0:64}', ["python3", "tests/test-status-gate.py"], "gate_log_client_sanitized"),
+    # Fixer round: findings on the v1.8.0 branch, each pinned by a named red.
+    ("gate-log-vanish-denied", "scripts/devbox-status-gate", 'size=0; break', 'exit 1', ["python3", "tests/test-status-gate.py"], "gate_log_rotation_concurrent"),
+    ("gate-log-present-unchecked", "scripts/devbox-status-gate", '      elif [ ! -e "$log" ] && [ ! -L "$log" ]; then\n', '      elif :; then\n', ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed:symlinked-log"),
+    ("status-optional-locks-taken", "scripts/devbox-session", "    GIT_OPTIONAL_LOCKS=0\n    export GIT_OPTIONAL_LOCKS\n", "", ["python3", "tests/test-session-status.py"], "status_index_untouched"),
+    ("status-turn-error-reads-free", "scripts/devbox-session", """out=$(bash "$_dt" status "$1" 2>/dev/null) || { printf 'unknown'; return; }""", """out=$(bash "$_dt" status "$1" 2>/dev/null) || { printf 'free'; return; }""", ["python3", "tests/test-session-status.py"], "turn_error_reads_unknown"),
+    ("status-turn-holder-free-accepted", "scripts/devbox-session", "        ''|free|unknown) printf 'unknown' ;;\n", "", ["python3", "tests/test-session-status.py"], "turn_holder_named_free_not_reapable"),
+    ("status-turn-holder-unchecked", "scripts/devbox-session", "        *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._@+:-]*) printf 'unknown' ;;\n", "", ["python3", "tests/test-session-status.py"], "turn_holder_by_free_not_reapable"),
+    ("status-json-control-raw", "scripts/devbox-session", """[$'\\001'-$'\\037'$'\\177']) _o="$_o$(printf '\\\\u%04x' "'$_c")" ;;""", """[$'\\001'-$'\\037'$'\\177']) _o="$_o$_c" ;;""", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-table-unsanitized", "scripts/devbox-session", """shown_word() { printf '%s' "$1" | LC_ALL=C tr -c '!-~' '?'; }""", """shown_word() { printf '%s' "$1"; }""", ["python3", "tests/test-session-status.py"], "status_table_printable"),
+    ("status-broken-worktree-aborts", "scripts/devbox-session", "        broken=true; turn=unknown\n", '        die "cannot read worktree: $worktree"\n', ["python3", "tests/test-session-status.py"], "status_edge_rc"),
+    ("status-activity-split-pane-ignored", "scripts/devbox-session", """        if [ "$pn" -gt 1 ] && [ -n "$pbusy" ]; then printf 'working'; return; fi\n""", "", ["python3", "tests/test-session-activity-faketmux.py"], "split window running the agent"),
+    ("status-activity-pane-listing-unproven", "scripts/devbox-session", """[ "$pn" -ge 1 ] && [ "$(printf '%s' "$panes" | grep -c '')" -eq "$pn" ] || { printf 'unknown held'; return; }""", """[ "$pn" -ge 1 ] || { printf 'unknown held'; return; }""", ["python3", "tests/test-session-activity-faketmux.py"], "inconsistent pane listing"),
+    ("status-activity-no-session-held", "scripts/devbox-session", """        tmux has-session -t "=$1" 2>/dev/null || { printf 'unknown'; return; }\n""", "", ["python3", "tests/test-session-activity-faketmux.py"], "no tmux session for the project"),
+    ("turn-ts-evaluated", "scripts/devbox-turn", '    age=$(lock_age "$ld")\n', '    ts=$(read_ts "$ld")\n    age=$(( $(now) - ts ))\n', ["python3", "tests/test-turn-lock.py"], "turn_ts_not_evaluated"),
+    ("turn-state-not-owner-only", "scripts/devbox-turn", '    [ -d "$STATE" ] || (umask 077 && mkdir -p "$STATE")\n', '    mkdir -p "$STATE"\n', ["python3", "tests/test-turn-lock.py"], "turn_state_owner_only"),
+    ("turn-status-creates-state", "scripts/devbox-turn", 'case "$cmd" in\n  take)\n', 'mkdir -p "$STATE"\ncase "$cmd" in\n  take)\n', ["python3", "tests/test-turn-lock.py"], "turn_status_read_only"),
+    ("installer-instance-key-hint-host-root", "scripts/install-devbox", 'if [[ -n $INSTANCE ]]; then\n  key_hint=', 'if false; then\n  key_hint=', ["python3", "tests/test-install-devbox-instance.py"], "instance_key_hint_in_container"),
+    ("installer-instance-rerun-drops-settings", "scripts/install-devbox", '  unset password_line\n  if [[ -n $INSTANCE ]]; then printf \'%s\\n\' "$instance_settings" >>"$tmp_env"; fi\n', '  unset password_line\n', ["python3", "tests/test-install-devbox-instance.py"], "instance_env_settings:rerun"),
+    ("installer-instance-browser-port-not-owned", "scripts/install-devbox", 'DEVBOX_WEB_PORT=*|DEVBOX_SSH_PORT=*|DEVBOX_BROWSER_PORT=*)', 'DEVBOX_WEB_PORT=*|DEVBOX_SSH_PORT=*)', ["python3", "tests/test-install-devbox-instance.py"], "instance_browser_rerun_owned_ports"),
+    ("harness-instance-browser-port-ignored", "scripts/devbox-anywhere", 'allowed |= INSTANCE_SETTINGS | {"DEVBOX_BROWSER_PORT"}', 'allowed |= INSTANCE_SETTINGS', ["python3", "tests/test-agent-harness-operations.py"], "harness_instance_state:browser"),
+    # Re-review round: each fail-closed branch or escape below survived its revert before.
+    ("status-json-utf8-check-iconv", "scripts/devbox-session", '          utf8_ok "$_s" || _hi=esc ;;', """          printf '%s' "$_s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || _hi=esc ;;""", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-json-utf8-above-max", "scripts/devbox-session", 'elif [ "$_b" -eq 244 ]; then _need=3; _hi=143\n', 'elif [ "$_b" -eq 244 ]; then _need=3\n', ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-registry-read-locale", "scripts/devbox-session", "    while LC_ALL=C IFS=$(printf '\\t') read -r agent worktree branch fork rest; do\n", "    while IFS=$(printf '\\t') read -r agent worktree branch fork rest; do\n", ["python3", "tests/test-session-status.py"], "status_registry_read_bytewise"),
+    ("status-json-quote-raw", "scripts/devbox-session", """          '"') _o="$_o\\\\\\"" ;;\n""", "", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-json-backslash-raw", "scripts/devbox-session", """          '\\') _o="$_o\\\\\\\\" ;;\n""", "", ["python3", "tests/test-session-status.py"], "status_json_control_escaped"),
+    ("status-turn-free-any-worktree", "scripts/devbox-session", """"free: $1") printf 'free'; return ;;""", """free*) printf 'free'; return ;;""", ["python3", "tests/test-session-status.py"], "turn_free_other_worktree_reads_unknown"),
+    ("status-turn-age-suffix-optional", "scripts/devbox-session", """case "$_h" in *", age="*) _h=${_h%", age="*} ;; *) printf 'unknown'; return ;; esac""", """case "$_h" in *", age="*) _h=${_h%", age="*} ;; *) : ;; esac""", ["python3", "tests/test-session-status.py"], "turn_held_no_age_reads_unknown"),
+    ("status-broken-worktree-turn-free", "scripts/devbox-session", "        broken=true; turn=unknown\n", "        broken=true\n", ["python3", "tests/test-session-status.py"], "status_broken_worktree_error:turn"),
+    ("status-activity-pane-row-unchecked", "scripts/devbox-session", """          case "$pl" in *"$tab"?*) : ;; *) printf 'unknown held'; return ;; esac\n""", "", ["python3", "tests/test-session-activity-faketmux.py"], "a pane row with no command"),
+    ("status-activity-panes-fail-idle", "scripts/devbox-session", """2>/dev/null && printf '.') || { printf 'unknown held'; return; }\n        panes=${panes%.}""", """2>/dev/null && printf '.') || { printf 'idle'; return; }\n        panes=${panes%.}""", ["python3", "tests/test-session-activity-faketmux.py"], "a failing pane listing"),
+    ("turn-ts-length-uncapped", "scripts/devbox-turn", '  [ "${#ts}" -le 18 ] || return 0\n', '', ["python3", "tests/test-turn-lock.py"], "turn_ts_not_evaluated"),
+    ("gate-append-stderr-leak", "scripts/devbox-status-gate", """  { printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log"; } 2>/dev/null || exit 1""", """  printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$when" "$1" "$shown" "${client:--}" "$2" >> "$log" 2>/dev/null || exit 1""", ["python3", "tests/test-status-gate.py"], "gate_allow_fail_closed:read-only-log-dir"),
 ]
 
 for case in CASES:

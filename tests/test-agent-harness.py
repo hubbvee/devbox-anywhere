@@ -73,6 +73,7 @@ esac
     assert report["ok"] is True
     assert report["network"]["web_bind"] == "127.0.0.1"
     assert report["network"]["ssh_bind"] == "127.0.0.1"
+    assert "instance" not in report, "default_report_unchanged"
     checks = {item["id"]: item for item in report["checks"]}
     for check_id in (
         "os.linux",

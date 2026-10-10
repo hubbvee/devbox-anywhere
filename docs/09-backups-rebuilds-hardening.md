@@ -72,3 +72,7 @@ fresh rebuilds have it from boot.
 - [ ] Know your revoke moves: delete a line in host `authorized_keys` (phone/picker),
       delete a line in `/data/devbox/ssh/authorized_keys` (container), rotate the
       service-account token (vault)
+- [ ] A bot gets only a read-only status-gate key on its **own** instance, never a key to
+      yours; revoke = delete its line in that instance's `~/.ssh/authorized_keys`, edited
+      as `coder` inside the instance, not as host root; suspected compromise = stop the
+      instance and rebuild its `~/.ssh` (docs/14)

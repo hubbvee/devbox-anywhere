@@ -26,7 +26,8 @@ secret into chat.
 4. generates a random code-server password without printing it;
 5. stores deployment settings in an owner-only file;
 6. builds and starts the pinned Compose stack;
-7. installs the persisted `devbox` and `devbox-relink` helpers; and
+7. installs the persisted helpers (`devbox`, `devbox-relink`, the session tools, and the
+   inert read-only `devbox-status-gate`); and
 8. verifies the running container before reporting success.
 
 It is resumable: running it again preserves the generated browser password and persistent
@@ -116,6 +117,10 @@ sudo ./scripts/install-devbox --yes --with-browser --approved-commit "$APPROVED_
 off by default, binds `127.0.0.1:8081` only, and generates its own owner-only password.
 Treat enabling it as a privileged/network change that needs explicit approval, and never
 expose port 8081 publicly. See [12 — Browsers & auth](12-browser-and-auth.md).
+
+To run a second, separate devbox next to the first (for example, for a bot's agents), add
+`--instance NAME --web-port N --ssh-port N`. Without `--instance` nothing changes. See
+[03 — Running a second instance](03-deploy-the-devbox.md#running-a-second-instance).
 
 The agent should retain the command output but redact any accidental credential material.
 It must verify the final status command printed by the installer instead of assuming a

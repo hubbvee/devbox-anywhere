@@ -79,6 +79,109 @@ one-time-PIN identity provider. Requires the DNS record proxied (orange cloud) a
 SSL Full (strict) from docs/02. Unauthenticated visitors now get Cloudflare's login
 before code-server even sees the request.
 
+## Running a second instance
+
+The plain-Docker installer ([docs/00](00-agent-guided-install.md)) can run a second,
+fully separate devbox next to your first — for example, one for a bot's agents with
+dev-only credentials ([docs/14](14-let-a-bot-manage-your-devbox.md)). If your devbox was
+installed from a release older than v1.8.0, first move `/opt/devbox-anywhere` to the
+approved v1.8.0 commit and re-run the default installer from it
+([docs/00](00-agent-guided-install.md) steps 1 and 3) with the same flags you first
+installed with (for example `--expose-ssh` or `--with-browser`; the installer does not
+remember them): an older checkout refuses `--instance`. Then, from that approved checkout:
+
+```bash
+cd /opt/devbox-anywhere
+./scripts/devbox-anywhere plan --json --approved-commit "$APPROVED_COMMIT" \
+  --instance bot --web-port 8180 --ssh-port 2322
+sudo ./scripts/install-devbox --dry-run --yes --approved-commit "$APPROVED_COMMIT" \
+  --instance bot --web-port 8180 --ssh-port 2322
+sudo ./scripts/install-devbox --yes --approved-commit "$APPROVED_COMMIT" \
+  --instance bot --web-port 8180 --ssh-port 2322
+sudo /opt/devbox-anywhere/scripts/devbox-anywhere verify --json --instance bot
+```
+
+`plan` needs the same `--instance`, `--web-port`, and `--ssh-port` as the installer;
+`preflight`, `verify`, and `diagnose` need only `--instance NAME`. Add
+`--with-browser --browser-port N` to both `plan` and the installer if the instance also
+needs the opt-in GUI browser.
+
+What changes for an instance named `NAME`:
+
+| | Default install | `--instance NAME` |
+| --- | --- | --- |
+| Data root | `/data/devbox` | `/data/devbox-NAME` |
+| Container | `devbox` | `devbox-NAME` |
+| Compose project | `stack` (named after the `stack/` directory) | `devbox-NAME` |
+| Ports | `8080` / `2222` (`8081` browser) | the ports you pass, loopback-only by default |
+
+- `NAME` is a letter followed by up to 14 lowercase letters or digits; a few reserved
+  names are refused.
+- Ports must be in 1024–65535, distinct, not `8080`, `2222`, or `8081`, and not already
+  in use; the installer refuses anything else.
+- Everything is separate: bind mounts, `authorized_keys`, CLI logins, helpers, sessions.
+  Add keys to the instance's own `~/.ssh/authorized_keys`, and tunnel the instance's SSH
+  port instead of `2222` ([docs/05](05-connect-from-any-device.md)). Once anything you do
+  not fully trust runs in the instance, edit its files from inside it as `coder` (see
+  [docs/14 step 3](14-let-a-bot-manage-your-devbox.md#3-add-the-gate-line)), not as host
+  root through `/data/devbox-NAME/...`, where a planted symlink would be followed. The
+  same applies to the default devbox's `/data/devbox/...` once agents run in it: add keys
+  with the in-container append in [docs/05](05-connect-from-any-device.md).
+- **Without `--instance` nothing changes:** the default install, its paths, and its ports
+  are exactly as before. Upgrade an instance by re-running the installer with the same
+  flags.
+- Always pass `-p devbox-NAME` when you run `docker compose` against an instance yourself,
+  as every command on this page does. The installer passes it, and also writes
+  `COMPOSE_PROJECT_NAME=devbox-NAME` into the instance's `compose.env` as a backstop for a
+  hand-typed `--env-file` command that forgets it. The default install's `compose.env`
+  deliberately carries no project name, so its project stays `stack`.
+- Backups: `scripts/backup-devbox.sh` takes no arguments — not even `--help` or
+  `--instance`; it ignores them and starts a real backup — and finds one container by its
+  filter. For an instance, install a **copy** whose filter is `-f name=^devbox-NAME$` (the
+  comments at the top of the script show where) and run it with its own `BACKUP_DIR`;
+  sharing a directory would let one copy's retention delete the other's archives. Or take
+  the stopped-instance `tar` backup shown below ([docs/09](09-backups-rebuilds-hardening.md)).
+
+**Removing an instance.** Stop and remove its containers by Compose project name (run it
+from a directory without a compose file, so only the project name is used):
+
+```bash
+cd / && sudo docker --context default compose -p devbox-NAME down
+```
+
+This leaves `/data/devbox-NAME` on disk, and a new instance with the same name reuses it.
+If you suspect the instance was compromised, set the data root aside instead of reusing it
+([docs/14 step 5](14-let-a-bot-manage-your-devbox.md#5-revoke-and-the-kill-switch)). Delete
+it only **after** you have backed it up and checked the backup, because it holds that
+instance's code, logins, and keys:
+
+```bash
+sudo sh -c 'umask 077; tar -C /data -czf /root/devbox-NAME-final.tar.gz devbox-NAME'
+sudo tar -tzf /root/devbox-NAME-final.tar.gz >/dev/null && echo backup-readable
+sudo rm -rf /data/devbox-NAME     # irreversible; double-check the name first
+```
+
+Never aim these at your default instance (`/data/devbox`, container `devbox`).
+
+**Troubleshooting an instance re-run.** The installer refuses to touch containers it did
+not create, and fails closed instead:
+
+- `container devbox-NAME exists but is not managed by Compose project devbox-NAME` — a
+  container with that name was made by hand or by another project. Rename or remove it
+  yourself after checking what it is; the installer will not adopt it.
+- `container ... already belongs to Compose project devbox-NAME; refusing to recreate it` —
+  usually a leftover one-off container, for example from
+  `docker compose -p devbox-NAME run ...`. List the project's containers, remove only that
+  one-off by its exact name, and re-run the installer:
+
+  ```bash
+  sudo docker --context default ps -a --filter label=com.docker.compose.project=devbox-NAME
+  sudo docker --context default rm EXACT_ONE_OFF_NAME
+  ```
+
+- `host port N is already in use` — something else listens on a port you chose. Pick
+  another port; ports the instance itself recorded on an earlier run are not counted.
+
 ## Two ways to add tools later (and make them stick)
 
 1. **Bake into the Dockerfile** — permanent, required for apt/system packages;
