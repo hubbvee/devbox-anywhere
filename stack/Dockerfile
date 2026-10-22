@@ -63,7 +63,7 @@ RUN arch="$(dpkg --print-architecture)" \
 # optional packages, whose selected Linux x64/arm64 integrities are verified below.
 # Update these values deliberately in a reviewed release.
 # User-level `npm i -g` later goes to ~/.local instead (entrypoint sets the npm prefix).
-ARG NODEJS_VERSION=22.23.2-1nodesource1
+ARG NODEJS_VERSION=22.23.4-1nodesource1
 ARG CLAUDE_CODE_VERSION=2.1.228
 ARG CODEX_VERSION=0.147.0
 ARG CLAUDE_CODE_INTEGRITY=sha512-S3Iy+c6ZuFjswQOekbVgXA+RxAuU8H2ae2nxFynqmvR5r3Gm9oyFV19XgiuatYRFKKjxP0K3i5vvvelPDgx12g==
@@ -74,8 +74,8 @@ ARG CODEX_LINUX_X64_INTEGRITY=sha512-0W9MBxPpWW0cSkNqrTDN2jR7rzzT7oNMhQY5446lT2L
 ARG CODEX_LINUX_ARM64_INTEGRITY=sha512-SLC1JXw2TYfr/c3HhrJubyyLelq7vTOLWVmiThFA+z0+WgzCPmaseJ/kzDD3Gge/TO7fCnnj7UcPmC0d2c8XAg==
 RUN arch="$(dpkg --print-architecture)" \
  && case "$arch" in \
-      amd64) node_sha256="eed0c5f0ab411f28783f81f051fcf7928ae8bf833e2df11f48f3fa78270025cb" ;; \
-      arm64) node_sha256="0018ee0bf997fce587042a2382941dcfac9f404fb994a5c3267fe7d12d8d837b" ;; \
+      amd64) node_sha256="e40ba508b45b2782ed453047d8e73fb9c4dd5358b70644eb9cc0e059ea2c959d" ;; \
+      arm64) node_sha256="b5d8fb520042ed34daec258d52d67dc8b6f66166afe7960cbca24e1d75301ce2" ;; \
       *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac \
  && curl -fsSL "https://deb.nodesource.com/node_22.x/pool/main/n/nodejs/nodejs_${NODEJS_VERSION}_${arch}.deb" \
